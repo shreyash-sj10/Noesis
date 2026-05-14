@@ -9,6 +9,10 @@ export type TradeExecutionBarProps = {
   onCancel: () => void;
   /** When false, primary is styled as blocked but may still be focusable for SR */
   showPrimary?: boolean;
+  /** Optional second action (e.g. “Return to setup” while primary is “Retry submit”). */
+  secondaryLabel?: string;
+  canSecondary?: boolean;
+  onSecondary?: () => void;
 };
 
 export default function TradeExecutionBar({
@@ -19,6 +23,9 @@ export default function TradeExecutionBar({
   onPrimary,
   onCancel,
   showPrimary = true,
+  secondaryLabel,
+  canSecondary = false,
+  onSecondary,
 }: TradeExecutionBarProps) {
   return (
     <footer className="sticky bottom-0 z-20 shrink-0 border-t border-slate-800/90 bg-slate-950/95 px-4 py-3 backdrop-blur-sm md:px-5">
@@ -40,6 +47,20 @@ export default function TradeExecutionBar({
             }`}
           >
             {primaryLabel}
+          </button>
+        ) : null}
+        {secondaryLabel ? (
+          <button
+            type="button"
+            onClick={() => onSecondary?.()}
+            disabled={!canSecondary}
+            className={`min-h-11 flex-1 rounded-lg border px-4 py-2.5 text-sm font-semibold transition sm:max-w-[12rem] ${
+              canSecondary
+                ? "border-slate-600 text-slate-200 hover:border-slate-500 hover:bg-slate-900/80"
+                : "cursor-not-allowed border-slate-800 text-slate-600"
+            }`}
+          >
+            {secondaryLabel}
           </button>
         ) : null}
         <button

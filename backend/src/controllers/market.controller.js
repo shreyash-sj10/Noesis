@@ -6,6 +6,7 @@ const { deriveIntelligenceState } = require("../utils/systemState");
 const { adaptMarket } = require("../adapters/market.adapter");
 const newsEngine = require('../services/news/news.engine');
 const { sendSuccess } = require("../utils/response.helper");
+const { getMarketSessionSnapshot } = require("../services/marketHours.service");
 
 /** Align price.engine sources with UI / legacy quote contract (REAL | CACHE | STALE | …). */
 const mapQuoteSource = (source) => {
@@ -133,6 +134,19 @@ const getIndices = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/market/session — IST clock + NSE session bounds + calendar presence (no DB quote fetch).
+ * Public + rate-limited; safe for dashboard strip before heavy market calls.
+ */
+const getSession = (req, res) => {
+  const snapshot = getMarketSessionSnapshot(new Date());
+  sendSuccess(res, req, {
+    success: true,
+    state: snapshot.clockState,
+    data: snapshot,
+  });
+};
+
 const getMarketOverview = async (req, res) => {
   try {
     const [quotes, newsData] = await Promise.all([
@@ -167,5 +181,6 @@ module.exports = {
   validateSymbol,
   getPortfolioNews,
   getIndices,
-  getMarketOverview
+  getMarketOverview,
+  getSession,
 };

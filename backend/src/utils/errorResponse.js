@@ -2,7 +2,7 @@
  * Maps HTTP status / message to retryable hint (additive contract).
  */
 const inferRetryable = (statusCode, message = "") => {
-  if ([503, 429, 408].includes(statusCode)) return true;
+  if ([503, 429, 408, 502, 504].includes(statusCode)) return true;
   if (statusCode === 409) return true;
   const m = String(message);
   if (m.includes("MARKET_DATA_UNAVAILABLE")) return true;

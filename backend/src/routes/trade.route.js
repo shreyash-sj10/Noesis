@@ -52,6 +52,8 @@ const tradeLimiter = rateLimit({
 
   message: tradeRateLimitBody,
   handler: async (req, res, _next, options) => {
+    const retrySec = Math.max(1, Math.ceil(Number(options.windowMs) / 1000));
+    res.set("Retry-After", String(retrySec));
     const body =
       typeof options.message === "function"
         ? await options.message(req, res)

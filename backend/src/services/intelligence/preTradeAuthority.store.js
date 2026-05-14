@@ -11,8 +11,6 @@ const crypto = require("crypto");
 const PreTradeToken = require("../../models/preTradeToken.model");
 const { normalizeSymbol } = require("../../utils/symbol.utils");
 
-const TOKEN_TTL_MS = 2 * 60 * 1000; // 2 minutes
-
 // ── Integer coercion (same rules as before) ───────────────────────────────────
 const toInteger = (value) => {
   if (value === null || value === undefined) return null;
@@ -63,6 +61,14 @@ const buildPayloadHash = (payload) => {
 const redisClient = require("../../utils/redisClient");
 const logger = require("../../utils/logger");
 
+/** Pre-trade authority token TTL (ms). Clamped 60s–15m; default 10m for wizard-style flows. */
+const TOKEN_TTL_MS_RAW = Number(process.env.PRE_TRADE_TOKEN_TTL_MS);
+const TOKEN_TTL_MS = (() => {
+  const n = Number.isFinite(TOKEN_TTL_MS_RAW) ? TOKEN_TTL_MS_RAW : 10 * 60 * 1000;
+  return Math.min(15 * 60 * 1000, Math.max(60 * 1000, n));
+})();
+const TOKEN_TTL_SEC = Math.max(60, Math.ceil(TOKEN_TTL_MS / 1000));
+
 
 const issueDecisionToken = async ({ symbol, productType, pricePaise, quantity, stopLossPaise, targetPricePaise, verdict, userId }) => {
   const token = crypto.randomUUID();
@@ -72,7 +78,7 @@ const issueDecisionToken = async ({ symbol, productType, pricePaise, quantity, s
   const data = { token, userId: userId || null, payloadHash, verdict, expiresAt: expiresAt.getTime() };
   if (redisClient && redisClient.status === "ready") {
      try {
-       await redisClient.set(`pretrade:${token}`, JSON.stringify(data), "EX", 120);
+       await redisClient.set(`pretrade:${token}`, JSON.stringify(data), "EX", TOKEN_TTL_SEC);
      } catch(e) { /* fallback */ }
   }
   await PreTradeToken.create({

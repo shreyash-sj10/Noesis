@@ -13,7 +13,13 @@
  * whatever data exists in MongoDB (fail-safe: empty cache → market treated as CLOSED).
  */
 const { syncCalendar } = require("../services/marketCalendarSync.service");
-const { refreshCalendarCache } = require("../utils/marketHours.util");
+const {
+  refreshCalendarCache,
+  getMarketClockState,
+  getIstWallClock,
+  isCalendarDocumentMissingToday,
+  getIstDateKey,
+} = require("../utils/marketHours.util");
 const logger = require("../utils/logger");
 
 const CACHE_REFRESH_MS = Number(process.env.CALENDAR_CACHE_REFRESH_MS || 60 * 1000);
@@ -21,6 +27,8 @@ const SYNC_INTERVAL_MS = Number(process.env.CALENDAR_SYNC_INTERVAL_MS || 24 * 60
 
 let _cacheTimer = null;
 let _syncTimer = null;
+/** Throttle missing-calendar CRITICAL logs (ms). */
+let _lastMissingCalendarLogMs = 0;
 
 /**
  * Runs one sync cycle: Docker service → MongoDB → in-memory cache.
@@ -44,6 +52,31 @@ const runCacheRefresh = async () => {
   } catch (err) {
     logger.warn({ event: "MARKET_CALENDAR_CACHE_REFRESH_FAILED", message: err?.message });
   }
+  maybeLogMissingTradingDayCalendar();
+};
+
+/**
+ * Weekday 08:00–16:00 IST: if there is still no MarketCalendar row for today,
+ * log CRITICAL at most once per hour (ops visibility).
+ */
+const maybeLogMissingTradingDayCalendar = () => {
+  const now = new Date();
+  const clock = getMarketClockState(now);
+  if (clock === "WEEKEND") return;
+  const { hour } = getIstWallClock(now);
+  if (hour < 8 || hour > 16) return;
+  if (!isCalendarDocumentMissingToday(now)) return;
+
+  const t = Date.now();
+  if (t - _lastMissingCalendarLogMs < 60 * 60 * 1000) return;
+  _lastMissingCalendarLogMs = t;
+
+  logger.error({
+    event: "MARKET_CALENDAR_ROW_MISSING_TODAY",
+    message:
+      "No MarketCalendar document for today (IST). isMarketOpen() remains false until Mongo has a row — run TRADING_CALENDAR_URL sync or seed.",
+    istDateKey: getIstDateKey(now),
+  });
 };
 
 /**

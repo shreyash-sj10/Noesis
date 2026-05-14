@@ -15,6 +15,7 @@ const marketReadLimiter = rateLimit({
 });
 
 // ─── NEW MARKET INTELLIGENCE LAYER ───
+router.get('/session', marketReadLimiter, marketController.getSession);
 router.get('/indices', marketReadLimiter, marketController.getIndices);
 router.get('/overview', marketReadLimiter, marketController.getMarketOverview);
 router.get('/validate', marketReadLimiter, marketController.validateSymbol);

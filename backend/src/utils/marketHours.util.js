@@ -201,6 +201,73 @@ const isSquareoffWindowEligible = (now = new Date()) => {
   return hour * 60 + minute >= getSquareoffMinutesIst();
 };
 
+/** IST wall clock for operational alerts (hour 0–23 in Asia/Kolkata). */
+const getIstWallClock = (now = new Date()) => {
+  const parts = getIstParts(now);
+  return {
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    weekdayShort: parts.weekday,
+  };
+};
+
+/**
+ * True when the in-memory cache is for "today" (IST) but Mongo returned no
+ * MarketCalendar document — isMarketOpen() stays false (fail-safe).
+ */
+const isCalendarDocumentMissingToday = (now = new Date()) => {
+  const dateKey = getIstDateKey(now);
+  return _cache.dateKey === dateKey && _cache.entry === null;
+};
+
+/**
+ * Single JSON snapshot for clients and ops: IST clock, NSE session bounds,
+ * square-off time, calendar row presence, and execution gate (isMarketOpen).
+ */
+const getMarketSessionSnapshot = (now = new Date()) => {
+  const dateKey = getIstDateKey(now);
+  const clockState = getMarketClockState(now);
+  const exchangeMic = String(process.env.CALENDAR_EXCHANGE_MIC || "XNSE").trim() || "XNSE";
+  const squareoffTimeIst = String(process.env.SQUAREOFF_TIME_IST || "15:20").trim();
+  const cacheAligned = _cache.dateKey === dateKey;
+  const entry = cacheAligned ? _cache.entry : null;
+  const openTimeIst = entry?.openTime ?? "09:15";
+  const closeTimeIst = entry?.closeTime ?? "15:30";
+
+  return {
+    timeZone: IST_TZ,
+    istDateKey: dateKey,
+    clockState,
+    isMarketOpen: isMarketOpen(now),
+    isSquareoffWindowEligible: isSquareoffWindowEligible(now),
+    exchangeMic,
+    nseCashSession: {
+      label: "NSE cash (regular)",
+      openTimeIst,
+      closeTimeIst,
+      note:
+        "Regular session is typically 09:15–15:30 IST. Intraday auto square-off uses squareoffTimeIst (default 15:20) before the official close.",
+    },
+    squareoffTimeIst,
+    calendarRowPresent: entry !== null,
+    calendarCacheAlignedToToday: cacheAligned,
+    calendar: entry
+      ? {
+          date: entry.date,
+          isOpen: entry.isOpen,
+          openTime: entry.openTime,
+          closeTime: entry.closeTime,
+          holiday: entry.holiday ?? null,
+          isHalfDay: Boolean(entry.isHalfDay),
+        }
+      : null,
+    dataIntegrityHint:
+      cacheAligned && entry === null
+        ? "No MarketCalendar document for today in MongoDB — execution treats the session as CLOSED until a row exists (sync or seed)."
+        : null,
+  };
+};
+
 module.exports = {
   isMarketOpen,
   getMarketClockState,
@@ -209,4 +276,7 @@ module.exports = {
   getSquareoffMinutesIst,
   getIstDateKey,
   refreshCalendarCache,
+  getIstWallClock,
+  isCalendarDocumentMissingToday,
+  getMarketSessionSnapshot,
 };

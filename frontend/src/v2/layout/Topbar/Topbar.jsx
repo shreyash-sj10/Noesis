@@ -55,7 +55,7 @@ export default function Topbar() {
 
       {/* ── RIGHT: balance + actions ─────────────────────── */}
       <div className="topbar__right">
-        <span className="topbar-status" title="Live feed active">
+        <span className="topbar-status" title="Indicative quotes (may be cached). Paper simulation — India / NSE-oriented, IST.">
           <span className="topbar-status__dot" aria-hidden="true" />
           <span className="topbar-status__label">LIVE</span>
         </span>

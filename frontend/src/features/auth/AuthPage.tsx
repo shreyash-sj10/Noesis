@@ -147,7 +147,8 @@ function SimulationHeaderRibbon() {
       role="status"
     >
       <p className="m-0 font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-[color-mix(in_srgb,var(--v2-text-secondary)_88%,var(--v2-state-warning)_12%)]">
-        Simulation environment — no capital at risk
+        Paper simulation — NSE cash-style rules (IST 09:15–15:30; intraday sq-off typically 15:20). No broker, no
+        live orders.
       </p>
     </div>
   );

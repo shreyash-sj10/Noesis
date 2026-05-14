@@ -30,8 +30,11 @@ import type { TradeOutcomeVisual } from "./terminal/DecisionResult";
 import { buildTradeEvaluation, type TradeEvaluation } from "./terminal/tradeEvaluation";
 import TradeSystemContext from "./terminal/TradeSystemContext";
 import { reviewGateVerdict, setupGateVerdict, type GateVerdict } from "./terminal/executionGateUi";
+import { normalizeApiError } from "../../lib/normalizeApiError.js";
 
 type Phase = "SETUP" | "ANALYZING" | "REVIEW" | "EXECUTING" | "SUCCESS" | "ERROR";
+
+type ExecuteFailMeta = { retryable: boolean; status: number | null };
 
 type Props = {
   open: boolean;
@@ -75,6 +78,7 @@ export default function DecisionPanel({ open, symbol, context, onClose, backdrop
   const [errorMsg, setErrorMsg] = useState("");
   const [submissionOutcome, setSubmissionOutcome] = useState<"executed" | "queued">("executed");
   const [reflectionPending, setReflectionPending] = useState(false);
+  const [executeFailMeta, setExecuteFailMeta] = useState<ExecuteFailMeta | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -82,6 +86,7 @@ export default function DecisionPanel({ open, symbol, context, onClose, backdrop
       setPreTrade(null);
       setEvaluation(null);
       setErrorMsg("");
+      setExecuteFailMeta(null);
       setQuantity("1");
       setProductType("DELIVERY");
       setStopLoss("");
@@ -136,6 +141,32 @@ export default function DecisionPanel({ open, symbol, context, onClose, backdrop
     return "—";
   }, [quote?.pricePaise, price]);
 
+  const preTradeTokenExpiresAtMs = useMemo(() => {
+    const raw = preTrade?.data?.authority?.expiresAt;
+    if (raw == null) return 0;
+    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+    const t = new Date(String(raw)).getTime();
+    return Number.isFinite(t) ? t : 0;
+  }, [preTrade]);
+
+  const canRetryExecuteSubmit = useMemo(() => {
+    if (phase !== "ERROR") return false;
+    if (!preTrade?.data?.authority?.token || evaluation?.status !== "VALID") return false;
+    if (!preTradeEmotion) return false;
+    if (preTradeTokenExpiresAtMs > 0 && preTradeTokenExpiresAtMs < Date.now() + 3000) return false;
+    const st = executeFailMeta?.status ?? null;
+    const retryable =
+      executeFailMeta?.retryable === true ||
+      st == null ||
+      st === 429 ||
+      st === 502 ||
+      st === 503 ||
+      st === 504 ||
+      st === 408 ||
+      (typeof st === "number" && st >= 500);
+    return retryable;
+  }, [phase, preTrade, evaluation, preTradeEmotion, executeFailMeta, preTradeTokenExpiresAtMs]);
+
   const headerPriceDisplay = useMemo(() => {
     if (
       phase === "SUCCESS" &&
@@ -145,8 +176,11 @@ export default function DecisionPanel({ open, symbol, context, onClose, backdrop
     ) {
       return `₹${fromPaise(executedPricePaise).toFixed(2)} (executed)`;
     }
-    return headerPrice;
-  }, [phase, submissionOutcome, executedPricePaise, headerPrice]);
+    let line = headerPrice;
+    if (quote?.isStale) line = `${line} · stale quote`;
+    else if (quote?.source === "CACHE" || quote?.isFallback) line = `${line} · cached quote`;
+    return line;
+  }, [phase, submissionOutcome, executedPricePaise, headerPrice, quote?.isStale, quote?.source, quote?.isFallback]);
 
   const changePct = context?.meta?.changePct ?? null;
   const decision = context?.decision ?? { action: "GUIDE" as const, confidence: 0, reason: "" };
@@ -399,16 +433,23 @@ export default function DecisionPanel({ open, symbol, context, onClose, backdrop
 
   const handleExecute = async () => {
     if (evaluation?.status !== "VALID" || !preTrade?.data?.authority?.token || !symbol) return;
+    if (!preTradeEmotion) return;
+    if (phase === "REVIEW") {
+      if (!canExecute) return;
+    } else if (phase === "ERROR") {
+      if (!canRetryExecuteSubmit) return;
+    } else {
+      return;
+    }
+
+    setExecuteFailMeta(null);
+    setPhase("EXECUTING");
     const pricePaise = toInt(price);
     const qtyInt = parseInt(quantity || "1", 10);
     const slPaise = toInt(stopLoss);
     const tpPaise = toInt(target);
     const token = preTrade.data.authority.token;
     const verdict = preTrade.data.authority.verdict;
-
-    if (!canExecute || !preTradeEmotion) return;
-
-    setPhase("EXECUTING");
     if (!executionIdempotencyKeyRef.current) {
       executionIdempotencyKeyRef.current =
         typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -493,9 +534,12 @@ export default function DecisionPanel({ open, symbol, context, onClose, backdrop
         onClose();
       }, 1200);
     } catch (err: unknown) {
+      const norm = normalizeApiError(err as never);
+      setExecuteFailMeta({ retryable: norm.retryable, status: norm.status });
       const msg =
-        (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
-        (err as Error)?.message ??
+        norm.message ||
+        (err as { response?: { data?: { message?: string } } })?.response?.data?.message ||
+        (err as Error)?.message ||
         "Order could not be submitted. No change was made to your portfolio.";
       setErrorMsg(msg);
       setPhase("ERROR");
@@ -694,7 +738,9 @@ export default function DecisionPanel({ open, symbol, context, onClose, backdrop
               <div className="flex items-start gap-2 rounded-lg border border-slate-800/80 bg-slate-900/35 px-3 py-2 text-sm text-slate-200">
                 <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-300" aria-hidden />
                 <p className="min-w-0 leading-snug">
-                  <span className="font-semibold">Execution blocked.</span>{" "}
+                  <span className="font-semibold">
+                    {canRetryExecuteSubmit ? "Submit did not complete." : "Execution blocked."}
+                  </span>{" "}
                   <span className="text-slate-300">{errorMsg || "System could not complete this step."}</span>
                 </p>
               </div>
@@ -740,15 +786,29 @@ export default function DecisionPanel({ open, symbol, context, onClose, backdrop
 
           {phase === "ERROR" && (
             <TradeExecutionBar
-              stateHeadline="Execution blocked"
+              stateHeadline={canRetryExecuteSubmit ? "Submit failed (you can retry)" : "Execution blocked"}
               stateDetail={errorMsg || undefined}
-              primaryLabel="Return to setup"
+              primaryLabel={canRetryExecuteSubmit ? "Retry submit" : "Return to setup"}
               canPrimary
               onPrimary={() => {
+                if (canRetryExecuteSubmit) {
+                  void handleExecute();
+                } else {
+                  setPreTrade(null);
+                  setEvaluation(null);
+                  setPhase("SETUP");
+                  setErrorMsg("");
+                  setExecuteFailMeta(null);
+                }
+              }}
+              secondaryLabel={canRetryExecuteSubmit ? "Return to setup" : undefined}
+              canSecondary={canRetryExecuteSubmit}
+              onSecondary={() => {
                 setPreTrade(null);
                 setEvaluation(null);
                 setPhase("SETUP");
                 setErrorMsg("");
+                setExecuteFailMeta(null);
               }}
               onCancel={onClose}
             />
