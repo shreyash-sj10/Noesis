@@ -1,11 +1,12 @@
 /**
  * Composes mandatory home data hooks only.
- * Account summary for system metrics is folded into usePortfolioDecisions (parallel GET).
- * All UI mapping delegated to mapHomeViewModel — not in components.
+ * Account metrics use `usePortfolioSummary` (same source + mapper as Topbar) so cash and net equity never drift.
  */
 import { useMemo } from "react";
 import { useAttentionDecisions } from "../../hooks/useAttentionDecisions";
 import { usePortfolioDecisions } from "../portfolio/usePortfolioDecisions";
+import { usePortfolioSummary } from "../../hooks/usePortfolioSummary";
+import { useMarketSession } from "../../hooks/useMarketSession";
 import { useProfileDecisions } from "../../hooks/useProfileDecisions";
 import { useTraceData } from "../../hooks/useTraceData";
 import {
@@ -23,6 +24,7 @@ import {
   type EventLogEntryVM,
 } from "./mapHomeViewModel";
 import type { DecisionCardProps } from "../../components/decision/DecisionCard";
+import { buildCapitalPlan, type CapitalPlanVM } from "../../lib/capitalPlan";
 
 export type HomeViewModel = {
   systemStatus: SystemStatusVM;
@@ -34,8 +36,10 @@ export type HomeViewModel = {
   positions: DecisionCardProps[];
   behaviorInsight: BehaviorInsightVM;
   eventLogs: EventLogEntryVM[];
+  capitalPlan: CapitalPlanVM | null;
   loading: {
     portfolio: boolean;
+    metrics: boolean;
     attention: boolean;
     profile: boolean;
     trace: boolean;
@@ -52,18 +56,26 @@ export type HomeViewModel = {
 export function useHomeViewModel(): HomeViewModel {
   const attention = useAttentionDecisions();
   const portfolio = usePortfolioDecisions();
+  const summaryQr = usePortfolioSummary();
   const profile   = useProfileDecisions();
   const trace     = useTraceData();
+  const marketSession = useMarketSession();
 
   return useMemo(() => {
     const sortedAttention = sortAttentionByUrgency(attention.items);
     const attentionTop3   = takeAttentionSlice(sortedAttention, 3);
     const positionCount   = portfolio.items.length;
 
+    const summaryLoading = summaryQr.isLoading;
+    const summaryFailed = summaryQr.isError;
+    const accountSummary = summaryQr.summary;
+    const summaryReady = Boolean(accountSummary) || (!summaryLoading && !summaryFailed);
+    const metricsBlocking = summaryLoading && !summaryReady;
+
     const systemState = buildSystemState(
-      portfolio.accountSummary ?? null,
-      portfolio.isLoading,
-      Boolean(portfolio.summaryFetchFailed),
+      metricsBlocking ? null : accountSummary,
+      metricsBlocking,
+      summaryFailed,
       sortedAttention,
       positionCount,
     );
@@ -72,17 +84,28 @@ export function useHomeViewModel(): HomeViewModel {
       attention.isError ||
       profile.isError ||
       trace.isError ||
-      Boolean(portfolio.summaryFetchFailed);
+      summaryFailed;
+    const sessionSnap =
+      marketSession.data != null
+        ? {
+            isMarketOpen: marketSession.data.isMarketOpen,
+            clockState: marketSession.data.clockState,
+          }
+        : null;
     const systemStatus = buildSystemStatus(
-      portfolio.isLoading,
-      attention.isLoading,
+      metricsBlocking,
+      metricsBlocking || (portfolio.isLoading && !summaryReady),
       hasAnyError,
       sortedAttention,
+      sessionSnap,
     );
 
+    const positionsBlocking =
+      portfolio.isLoading && portfolio.items.length === 0 && !summaryReady;
+
     const nextAction = buildNextAction(
-      portfolio.isLoading,
-      attention.isLoading,
+      metricsBlocking,
+      positionsBlocking,
       portfolio.items,
       sortedAttention,
       profile.items,
@@ -90,6 +113,7 @@ export function useHomeViewModel(): HomeViewModel {
 
     const behaviorInsight = buildBehaviorInsight(profile.items);
     const eventLogs       = buildEventLogs(trace.lines, 8);
+    const capitalPlan = accountSummary ? buildCapitalPlan(accountSummary) : null;
 
     return {
       systemStatus,
@@ -100,8 +124,10 @@ export function useHomeViewModel(): HomeViewModel {
       positions: portfolio.items,
       behaviorInsight,
       eventLogs,
+      capitalPlan,
       loading: {
-        portfolio: portfolio.isLoading,
+        portfolio: portfolio.isLoading && portfolio.items.length === 0,
+        metrics: metricsBlocking,
         attention: attention.isLoading,
         profile:   profile.isLoading,
         trace:     trace.isLoading,
@@ -111,7 +137,7 @@ export function useHomeViewModel(): HomeViewModel {
         attention: attention.isError,
         profile:   profile.isError,
         trace:     trace.isError,
-        summary:   Boolean(portfolio.summaryFetchFailed),
+        summary: summaryFailed,
       },
     };
   }, [
@@ -121,13 +147,15 @@ export function useHomeViewModel(): HomeViewModel {
     portfolio.items,
     portfolio.isLoading,
     portfolio.isError,
-    portfolio.accountSummary,
-    portfolio.summaryFetchFailed,
+    summaryQr.summary,
+    summaryQr.isLoading,
+    summaryQr.isError,
     profile.items,
     profile.isLoading,
     profile.isError,
     trace.lines,
     trace.isLoading,
     trace.isError,
+    marketSession.data,
   ]);
 }

@@ -26,7 +26,7 @@ export default function TradePanelOverlay({ open, onClose, backdrop = "default",
       : "trade-terminal-backdrop";
 
   return (
-    <div className={backdropCls} role="presentation" aria-hidden>
+    <div className={backdropCls}>
       {/* Backdrop does not dismiss the terminal — avoids accidental closes. Use Close / Cancel / Escape. */}
       <div className="trade-terminal-shell">{children}</div>
     </div>

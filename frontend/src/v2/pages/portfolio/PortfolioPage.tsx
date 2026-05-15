@@ -3,20 +3,21 @@ import { useNavigate } from "react-router-dom";
 import { AlertTriangle, CheckCircle } from "lucide-react";
 import AppLayout from "../../layout/AppLayout/AppLayout.jsx";
 import { usePortfolioDecisions } from "./usePortfolioDecisions";
-import { usePortfolioSummary } from "../../hooks/usePortfolioSummary";
+import {
+  EMPTY_PORTFOLIO_SUMMARY,
+  type PortfolioSummary,
+  usePortfolioSummary,
+} from "../../hooks/usePortfolioSummary";
 import { useClosedPositions } from "../../hooks/useClosedPositions";
-import { useTraceData } from "../../hooks/useTraceData";
 import { TRADE_SUCCESS_SESSION_KEY } from "../../trade-flow";
 import { formatINR, formatSignedINR, fromPaise } from "../../../utils/currency.utils";
 import type { DecisionCardProps } from "../../components/decision/DecisionCard";
 import DecisionPanel from "../../features/trade/DecisionPanel";
 import type { TradePanelContext } from "../../trade-flow";
-import EventLog from "../home/components/EventLog";
-import { buildEventLogs } from "../home/mapHomeViewModel";
 import PortfolioDecisionStrip, { PortfolioClosedStrip, PortfolioPendingStrip } from "./PortfolioDecisionStrip";
-import { buildPortfolioSessionLogs } from "./portfolioSessionLogs";
 import { ROUTES } from "../../routing/routes";
-import type { PortfolioSummary } from "../../hooks/usePortfolioSummary";
+import { buildCapitalPlan } from "../../lib/capitalPlan";
+import PortfolioCapitalGrid from "../../components/portfolio/PortfolioCapitalGrid";
 
 type PortfolioTab = "DEPLOYED" | "QUEUED" | "COMPLETED";
 
@@ -50,10 +51,10 @@ function exposureBand(exposure: number | null): { label: string; tone: SystemIns
 }
 
 function riskStateLabel(breachCount: number, atRiskCount: number, deployedCount: number): string {
-  if (breachCount > 0) return "Execution Locked";
-  if (atRiskCount > 0) return "Controlled (Elevated)";
+  if (breachCount > 0) return "Attention required";
+  if (atRiskCount > 0) return "Elevated review";
   if (deployedCount > 0) return "Controlled";
-  return "Ready to Deploy";
+  return "Ready to deploy";
 }
 
 function buildPortfolioIntel(
@@ -174,7 +175,7 @@ function buildPortfolioIntel(
   let postureAction: string;
   let postureTone: SystemInsightBlock["tone"];
   if (blockedCount > 0) {
-    postureState = "Execution Locked";
+    postureState = "Attention required";
     postureInterpretation = `${blockedCount} deployed position(s) are in breach while ${bias}.`;
     postureAction = "Prioritize de-risking breached lines before new deployment.";
     postureTone = "bad";
@@ -220,14 +221,13 @@ function buildPortfolioIntel(
 
 export default function PortfolioPage() {
   const portfolio = usePortfolioDecisions();
-  const { summary, isError: summaryError, isLoading: summaryLoading } = usePortfolioSummary();
+  const { summary: summaryRaw, isError: summaryError, isLoading: summaryLoading } = usePortfolioSummary();
+  const summary: PortfolioSummary = summaryRaw ?? EMPTY_PORTFOLIO_SUMMARY;
   const closed = useClosedPositions();
-  const trace = useTraceData();
   const navigate = useNavigate();
   const [tab, setTab] = useState<PortfolioTab>("DEPLOYED");
   const [tradeBanner, setTradeBanner] = useState(false);
   const [panel, setPanel] = useState<{ symbol: string; ctx: TradePanelContext } | null>(null);
-  const [showEventLog, setShowEventLog] = useState(false);
 
   useEffect(() => {
     if (sessionStorage.getItem(TRADE_SUCCESS_SESSION_KEY) === "1") {
@@ -244,8 +244,7 @@ export default function PortfolioPage() {
   const exp = exposurePct(netEquity, invested);
   const riskPct = activeRiskPct(portfolio.items);
   const intel = useMemo(() => buildPortfolioIntel(portfolio.items, summary, exp), [portfolio.items, summary, exp]);
-  const eventEntries = useMemo(() => buildEventLogs(trace.lines, 16), [trace.lines]);
-
+  const capital = useMemo(() => buildCapitalPlan(summary), [summary]);
   const breachCount = useMemo(
     () => portfolio.items.filter((i) => i.decision?.action === "BLOCK").length,
     [portfolio.items],
@@ -253,27 +252,6 @@ export default function PortfolioPage() {
   const atRiskCount = useMemo(
     () => portfolio.items.filter((i) => i.decision?.action === "GUIDE").length,
     [portfolio.items],
-  );
-
-  const portfolioLogAnchor = useMemo(
-    () =>
-      `${portfolio.items.map((i) => `${i.title}:${i.decision?.action}:${i.meta?.pnlPct}`).join("|")}|${netEquity}|${unrealizedPnL}`,
-    [portfolio.items, netEquity, unrealizedPnL],
-  );
-
-  const portfolioSessionEntries = useMemo(() => {
-    const anchorMs = Date.now();
-    return buildPortfolioSessionLogs({
-      positionCount: portfolio.items.length,
-      breachCount,
-      atRiskCount,
-      anchorMs,
-    });
-  }, [portfolio.items.length, breachCount, atRiskCount, portfolioLogAnchor]);
-
-  const mergedEventEntries = useMemo(
-    () => [...portfolioSessionEntries, ...eventEntries].slice(0, 28),
-    [portfolioSessionEntries, eventEntries],
   );
 
   function openTradeReview(item: DecisionCardProps) {
@@ -285,6 +263,9 @@ export default function PortfolioPage() {
           pnlPct: item.meta?.pnlPct,
           quantity: item.meta?.quantity,
           avgPricePaise: item.meta?.avgPricePaise,
+          currentPricePaise: item.meta?.currentPricePaise,
+          unrealizedPnLPaise: item.meta?.unrealizedPnLPaise,
+          changePct: item.meta?.changePct ?? item.meta?.dayChangePct ?? undefined,
         },
         warnings: [],
       },
@@ -307,13 +288,13 @@ export default function PortfolioPage() {
           ? "Exposure low — system ready to deploy capital."
           : "No active deployment — system ready to deploy capital.";
   const riskToneClass =
-    riskState === "Execution Locked"
-      ? "text-rose-300"
-      : riskState === "Controlled (Elevated)"
-        ? "text-amber-300"
+    riskState === "Attention required"
+      ? "text-amber-200"
+      : riskState === "Elevated review"
+        ? "text-amber-100"
         : riskState === "Controlled"
-          ? "text-emerald-300"
-          : "text-cyan-300";
+          ? "text-emerald-200"
+          : "text-slate-200";
 
   return (
     <AppLayout>
@@ -348,10 +329,10 @@ export default function PortfolioPage() {
               </div>
               <span
                 className={`rounded-md border px-2.5 py-1 text-xs font-bold uppercase tracking-wide ${
-                  riskState === "Execution Locked"
-                    ? "border-rose-500/45 bg-rose-500/10 text-rose-100"
-                    : riskState === "Controlled (Elevated)"
-                      ? "border-amber-500/40 bg-amber-500/10 text-amber-100"
+                  riskState === "Attention required"
+                    ? "border-amber-500/35 bg-amber-500/8 text-amber-100"
+                    : riskState === "Elevated review"
+                      ? "border-amber-500/30 bg-amber-500/8 text-amber-50"
                       : riskState === "Controlled"
                         ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
                         : "border-cyan-500/40 bg-cyan-500/10 text-cyan-100"
@@ -360,35 +341,18 @@ export default function PortfolioPage() {
                 {riskState}
               </span>
             </div>
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-              <div className="rounded-lg border border-slate-800/80 bg-slate-950/35 px-3 py-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Equity</p>
-                <p className="mt-1 text-base font-semibold tabular-nums text-slate-100">
-                  {netEquity > 0 ? formatINR(netEquity) : "—"}
-                </p>
-              </div>
-              <div className="rounded-lg border border-slate-800/80 bg-slate-950/35 px-3 py-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">PnL</p>
-                <p className="mt-1 text-base font-semibold tabular-nums text-slate-100">
-                  {pnlDisplay} <span className="text-xs text-slate-400">({pnlPctDisplay})</span>
-                </p>
-              </div>
-              <div className="rounded-lg border border-slate-800/80 bg-slate-950/35 px-3 py-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Exposure</p>
-                <p className="mt-1 text-base font-semibold tabular-nums text-slate-100">{exposureDisplay}</p>
-                <p className="text-xs text-slate-400">{exposureState.label}</p>
-              </div>
-              <div className="rounded-lg border border-slate-800/80 bg-slate-950/35 px-3 py-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Risk state</p>
-                <p className={`mt-1 text-base font-semibold ${riskToneClass}`}>{riskState}</p>
-                <p className="text-xs text-slate-400">Active risk {activeRiskDisplay}</p>
-              </div>
-              <div className="rounded-lg border border-slate-800/80 bg-slate-950/35 px-3 py-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Positions</p>
-                <p className="mt-1 text-base font-semibold tabular-nums text-slate-100">{portfolio.items.length}</p>
-                <p className="text-xs text-slate-400">{summary.pendingOrders.length} queued</p>
-              </div>
-            </div>
+            <PortfolioCapitalGrid
+              capital={capital}
+              equityDisplay={netEquity > 0 ? formatINR(netEquity) : "—"}
+              pnlPctDisplay={pnlPctDisplay}
+              exposureDisplay={exposureDisplay}
+              exposureLabel={exposureState.label}
+              riskState={riskState}
+              riskToneClass={riskToneClass}
+              activeRiskDisplay={activeRiskDisplay}
+              positionCount={portfolio.items.length}
+              queuedCount={summary.pendingOrders.length}
+            />
           </section>
 
           <div className="portfolio-tabs" role="tablist" aria-label="Portfolio sections">
@@ -574,58 +538,18 @@ export default function PortfolioPage() {
                 <h2 className="home-panel__title">System insight</h2>
                 <p className="home-panel__lead">State, interpretation, and suggested action from live capital posture.</p>
               </header>
-              <div className="portfolio-intel space-y-3">
-                {intel.slice(0, 3).map((block) => (
-                  <article key={block.id} className="rounded-lg border border-slate-800/80 bg-slate-950/35 p-3">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{block.title}</p>
-                    <p
-                      className={`mt-1 text-sm font-semibold ${
-                        block.tone === "bad"
-                          ? "text-rose-300"
-                          : block.tone === "warn"
-                            ? "text-amber-300"
-                            : block.tone === "good"
-                              ? "text-emerald-300"
-                              : "text-slate-200"
-                      }`}
-                    >
+              <div className="portfolio-intel portfolio-intel--scroll">
+                {intel.map((block) => (
+                  <article key={block.id} className="portfolio-intel__card">
+                    <p className="portfolio-intel__card-title">{block.title}</p>
+                    <p className={`portfolio-intel__state portfolio-intel__state--${block.tone}`}>
                       {block.state}
                     </p>
-                    <p className="mt-1 text-xs leading-snug text-slate-400">{block.interpretation}</p>
-                    <p className="mt-2 text-xs leading-snug text-cyan-300">Suggested action: {block.action}</p>
+                    <p className="portfolio-intel__interpretation">{block.interpretation}</p>
+                    <p className="portfolio-intel__action">Suggested action: {block.action}</p>
                   </article>
                 ))}
               </div>
-            </section>
-
-            <section className="home-panel home-panel--compact portfolio-event-log-panel">
-              <header className="home-panel__head">
-                <h2 className="home-panel__title">Event log</h2>
-                <p className="home-panel__lead">Low-priority trace stream.</p>
-                <button
-                  type="button"
-                  className="portfolio-strip__cta"
-                  onClick={() => setShowEventLog((v) => !v)}
-                  aria-expanded={showEventLog}
-                >
-                  {showEventLog ? "Collapse log" : "Expand log"}
-                </button>
-              </header>
-              {!showEventLog ? (
-                <p className="page-note text-xs" style={{ padding: "var(--space-3) var(--space-4)" }}>
-                  Event log collapsed by default. Expand only when diagnosing execution flow.
-                </p>
-              ) : trace.isLoading ? (
-                <p className="page-note text-xs" style={{ padding: "var(--space-3) var(--space-4)" }}>
-                  Loading trace…
-                </p>
-              ) : trace.isError ? (
-                <p className="page-note text-xs" style={{ padding: "var(--space-3) var(--space-4)" }}>
-                  Trace unavailable.
-                </p>
-              ) : (
-                <EventLog entries={mergedEventEntries} dense />
-              )}
             </section>
           </aside>
         </div>

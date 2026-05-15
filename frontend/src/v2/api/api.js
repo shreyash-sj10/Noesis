@@ -8,14 +8,33 @@ const CSRF_SESSION_KEY = "auth.csrfToken";
 /**
  * Backend mounts all routes under /api. Env may be origin only (http://host:port) or full base including /api.
  */
-function resolveApiBaseUrl() {
+export function resolveApiBaseUrl() {
+  const isLocalhostRuntime =
+    typeof window !== "undefined" &&
+    ["localhost", "127.0.0.1"].includes(window.location.hostname);
   const raw =
+    (isLocalhostRuntime && import.meta.env.VITE_API_BASE_URL_LOCAL) ||
     import.meta.env.VITE_API_BASE_URL ||
     import.meta.env.VITE_API_URL ||
     import.meta.env.VITE_BACKEND_URL ||
     "http://localhost:5001";
   const trimmed = String(raw).replace(/\/+$/, "");
   return trimmed.endsWith("/api") ? trimmed : `${trimmed}/api`;
+}
+
+/** WebSocket URL for Phase A live quote stream (same host as REST /api). */
+export function buildLiveQuoteWebSocketUrl(accessToken) {
+  if (typeof window === "undefined" || !accessToken) return null;
+  try {
+    const base = resolveApiBaseUrl();
+    const u = new URL(base);
+    const wsProto = u.protocol === "https:" ? "wss:" : "ws:";
+    const pathBase = u.pathname.replace(/\/$/, "") || "";
+    const path = `${pathBase}/ws/live-quote`;
+    return `${wsProto}//${u.host}${path}?token=${encodeURIComponent(accessToken)}`;
+  } catch {
+    return null;
+  }
 }
 
 const BASE_URL = resolveApiBaseUrl();

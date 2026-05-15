@@ -17,7 +17,7 @@ export type SystemStateVM = {
 export type SystemStatusVM = {
   marketStatus: "OPEN" | "CLOSED";
   marketReason: string;
-  dataStatus: "LIVE" | "DELAYED";
+  dataStatus: "SYNCED" | "DELAYED";
   dataReason: string;
   executionStatus: "READY" | "ACTION REQUIRED";
   executionReason: string;
@@ -264,12 +264,7 @@ export function buildBehaviorInsight(profileItems: DecisionCardProps[]): Behavio
   };
 }
 
-export function buildSystemStatus(
-  portfolioLoading: boolean,
-  attentionLoading: boolean,
-  hasAnyError: boolean,
-  sortedAttention: DecisionCardProps[],
-): SystemStatusVM {
+function isMarketOpenClientFallback(): boolean {
   const now = new Date();
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Kolkata",
@@ -285,27 +280,69 @@ export function buildSystemStatus(
   const isWeekday = !["Sat", "Sun"].includes(weekday);
   const openMinutes = 9 * 60 + 15;
   const closeMinutes = 15 * 60 + 30;
-  const isMarketOpen = isWeekday && totalMinutes >= openMinutes && totalMinutes < closeMinutes;
+  return isWeekday && totalMinutes >= openMinutes && totalMinutes < closeMinutes;
+}
+
+export type MarketSessionSnapshot = {
+  isMarketOpen: boolean;
+  clockState?: string;
+} | null;
+
+export function buildSystemStatus(
+  portfolioLoading: boolean,
+  attentionLoading: boolean,
+  hasAnyError: boolean,
+  sortedAttention: DecisionCardProps[],
+  session: MarketSessionSnapshot,
+): SystemStatusVM {
+  const isMarketOpen =
+    session != null ? session.isMarketOpen : isMarketOpenClientFallback();
 
   const hasUrgent = sortedAttention.some(
     (item) => item.decision.action === "BLOCK" || item.decision.action === "GUIDE",
   );
   const isDataDelayed = portfolioLoading || attentionLoading || hasAnyError;
 
+  const marketReason = isMarketOpen
+    ? "NSE cash session is open (IST)."
+    : session?.clockState
+      ? marketClosedReasonFromClock(session.clockState)
+      : "Outside NSE cash trading session (IST).";
+
+  const executionStatus = hasUrgent ? "ACTION REQUIRED" : "READY";
+  const executionReason = hasUrgent
+    ? isMarketOpen
+      ? "At least one position needs review before next execution."
+      : "Review open risk; new orders queue until the session opens."
+    : isMarketOpen
+      ? "No blocking risk signal is active."
+      : "Session closed — execution and automation are idle until open.";
+
   return {
     marketStatus: isMarketOpen ? "OPEN" : "CLOSED",
-    marketReason: isMarketOpen
-      ? "NSE cash session is live (IST)."
-      : "Outside NSE cash trading session (IST).",
-    dataStatus: isDataDelayed ? "DELAYED" : "LIVE",
+    marketReason,
+    dataStatus: isDataDelayed ? "DELAYED" : "SYNCED",
     dataReason: isDataDelayed
       ? "Feeds are syncing or partially unavailable."
-      : "Portfolio and risk feeds are synced.",
-    executionStatus: hasUrgent ? "ACTION REQUIRED" : "READY",
-    executionReason: hasUrgent
-      ? "At least one position needs review before next execution."
-      : "No blocking risk signal is active.",
+      : "Portfolio and risk feeds are synced (quotes may still be delayed after hours).",
+    executionStatus,
+    executionReason,
   };
+}
+
+function marketClosedReasonFromClock(clockState: string): string {
+  switch (clockState) {
+    case "WEEKEND":
+      return "Weekend — no NSE cash session (IST).";
+    case "HOLIDAY":
+      return "Exchange holiday (IST calendar).";
+    case "PRE_OPEN":
+      return "Pre-open — cash session not started (IST).";
+    case "POST_CLOSE":
+      return "After close — NSE cash session ended for the day (IST).";
+    default:
+      return "Outside NSE cash trading session (IST).";
+  }
 }
 
 function parseTraceLineForDisplay(line: TraceLine): EventLogEntryVM {

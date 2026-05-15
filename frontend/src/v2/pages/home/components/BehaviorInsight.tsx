@@ -4,19 +4,37 @@ type BehaviorInsightProps = {
   model: BehaviorInsightVM;
   acknowledged: boolean;
   onAcknowledge: () => void;
+  compact?: boolean;
 };
 
 export default function BehaviorInsight({
   model,
   acknowledged,
   onAcknowledge,
+  compact = false,
 }: BehaviorInsightProps) {
   if (acknowledged) {
-    return (
-      <div>
-        <p className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2 text-sm leading-relaxed text-slate-400">
-          Note dismissed for this session.
+    return <p className="page-note text-xs">Dismissed this session.</p>;
+  }
+
+  if (compact) {
+    if (model.kind === "insufficient") {
+      return (
+        <p className="text-xs leading-relaxed text-slate-400">
+          {model.missing}{" "}
+          <button type="button" className="home-panel__link-btn" onClick={onAcknowledge}>
+            Dismiss
+          </button>
         </p>
+      );
+    }
+    return (
+      <div className="home-behavior-compact">
+        <p className="text-sm font-medium text-slate-200">{model.pattern}</p>
+        <p className="mt-1 text-xs text-slate-400">{model.correction}</p>
+        <button type="button" className="home-panel__link-btn mt-2" onClick={onAcknowledge}>
+          Acknowledge
+        </button>
       </div>
     );
   }

@@ -1,5 +1,7 @@
 require("dotenv").config(); // Load environment variables
+const http = require("http");
 const app = require("./app"); // Import the Express app
+const { attachLiveQuoteWebSocket } = require("./infra/liveQuoteWs");
 const connectDB = require("./config/db"); // Import the database connection function
 const logger = require("./utils/logger");
 const stopLossMonitor = require("./services/stopLossMonitor.service");
@@ -80,7 +82,28 @@ const startServer = async () => {
       });
     }
 
-    app.listen(PORT, () => {
+    const httpServer = http.createServer(app);
+    attachLiveQuoteWebSocket(httpServer);
+
+    httpServer.on("error", (err) => {
+      if (err && err.code === "EADDRINUSE") {
+        logger.error({
+          service: "server",
+          step: "LISTEN",
+          status: "FAILURE",
+          data: {
+            port: PORT,
+            message: `Port ${PORT} is already in use. Stop the other Node process (or change PORT) and restart.`,
+          },
+          timestamp: new Date().toISOString(),
+        });
+        process.exit(1);
+        return;
+      }
+      throw err;
+    });
+
+    httpServer.listen(PORT, () => {
       logger.info({
         service: "server",
         step: "LISTEN",

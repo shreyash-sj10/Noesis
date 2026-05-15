@@ -126,7 +126,10 @@ const syncCalendar = async () => {
     logger.warn({
       event: "MARKET_CALENDAR_SYNC_FAILED",
       mic,
+      baseUrl: BASE_URL(),
       message: err.message,
+      hint:
+        "Start Docker: docker run -p 8080:8080 ghcr.io/apptastic-software/trading-calendar:latest — or npm run seed:calendar",
     });
     return 0;
   }

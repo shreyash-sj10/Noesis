@@ -1,5 +1,7 @@
-import api from "../api/api.js";
 import { getPositions } from "../api/portfolio.api.js";
+import { queryClient } from "../../queryClient";
+import { mapPortfolioSummaryPayload, fetchPortfolioSummaryForQuery } from "../hooks/usePortfolioSummary";
+import { queryKeys } from "../queryKeys";
 import type { BuildDecisionInput } from "../domain/decision/buildDecision";
 import type { PortfolioSummary } from "../hooks/usePortfolioSummary";
 
@@ -9,6 +11,10 @@ export type PortfolioPosition = BuildDecisionInput & {
   quantity: number;
   /** From API `avgPricePaise` — average entry, for display only */
   avgPricePaise: number;
+  currentPricePaise: number;
+  unrealizedPnLPaise: number;
+  dayChangePct: number | null;
+  isFallback: boolean;
 };
 
 /**
@@ -20,6 +26,13 @@ export function mapApiPosition(pos: Record<string, unknown>): PortfolioPosition 
   const qty      = Number(pos.quantity ?? 0);
   const pnlPct   = Number.isFinite(Number(pos.pnlPct)) ? Number(pos.pnlPct) : 0;
   const avgPricePaise = Math.round(Number(pos.avgPricePaise ?? 0));
+  const currentPricePaise = Math.round(Number(pos.currentPricePaise ?? avgPricePaise));
+  const unrealizedPnLPaise = Math.round(
+    Number(pos.unrealizedPnLPaise ?? pos.unrealizedPnL ?? 0),
+  );
+  const dayRaw = pos.dayChangePct;
+  const dayChangePct =
+    dayRaw != null && Number.isFinite(Number(dayRaw)) ? Number(dayRaw) : null;
   const isFallback = Boolean(pos.isFallback);
 
   // Risk score derived from real PnL: healthy position → high score, loss → lower
@@ -46,6 +59,10 @@ export function mapApiPosition(pos: Record<string, unknown>): PortfolioPosition 
     pnlPct,
     quantity: Number.isFinite(qty) ? qty : 0,
     avgPricePaise,
+    currentPricePaise,
+    unrealizedPnLPaise,
+    dayChangePct,
+    isFallback,
     warnings,
   };
 }
@@ -70,33 +87,20 @@ export async function fetchPortfolioData(): Promise<{
   }
 }
 
-/** Parse GET /portfolio/summary response — same shape as usePortfolioSummary.fetchSummary */
+/** Parse GET /portfolio/summary — uses the same mapper as `usePortfolioSummary` (no field-order drift). */
 export function parsePortfolioSummaryResponse(res: unknown): PortfolioSummary | null {
-  try {
-    const d = (res as { data?: { data?: Record<string, unknown> } })?.data?.data;
-    if (!d) return null;
-    const row = d as Record<string, unknown>;
-    return {
-      netEquityPaise: Number(row.totalValuePaise ?? 0),
-      balancePaise: Number(row.balancePaise ?? 0),
-      unrealizedPnLPaise: Number(row.unrealizedPnLPaise ?? 0),
-      realizedPnLPaise: Number(row.realizedPnLPaise ?? 0),
-      totalInvestedPaise: Number(row.totalInvestedPaise ?? 0),
-      totalPnlPct: Number(row.totalPnlPct ?? 0),
-      winRate: Number(row.winRate ?? 0),
-      isDegraded: false,
-    };
-  } catch {
-    return null;
-  }
+  const d = (res as { data?: { data?: unknown } })?.data?.data;
+  return mapPortfolioSummaryPayload(d);
 }
 
 async function fetchAccountSummary(): Promise<{ summary: PortfolioSummary | null; failed: boolean }> {
   try {
-    const res = await api.get("/portfolio/summary");
-    const parsed = parsePortfolioSummaryResponse(res);
-    if (!parsed) return { summary: null, failed: true };
-    return { summary: parsed, failed: false };
+    const summary = await queryClient.ensureQueryData({
+      queryKey: queryKeys.portfolioSummary,
+      queryFn: fetchPortfolioSummaryForQuery,
+      staleTime: 30_000,
+    });
+    return { summary, failed: false };
   } catch {
     return { summary: null, failed: true };
   }

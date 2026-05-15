@@ -5,8 +5,11 @@ type SystemStatusBarProps = {
 };
 
 function toneFor(value: string): string {
-  if (value === "OPEN" || value === "LIVE" || value === "READY") {
+  if (value === "OPEN" || value === "SYNCED" || value === "READY") {
     return "border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
+  }
+  if (value === "CLOSED") {
+    return "border-slate-600 bg-slate-800/80 text-slate-300";
   }
   if (value === "ACTION REQUIRED" || value === "DELAYED") {
     return "border-amber-500/40 bg-amber-500/10 text-amber-200";
@@ -27,14 +30,12 @@ export default function SystemStatusBar({ model }: SystemStatusBarProps) {
             {model.marketStatus}
           </span>
         </div>
-
         <div className="flex items-center justify-between gap-2">
           <p className="text-xs uppercase tracking-wide text-slate-400">Data</p>
           <span className={`rounded-md border px-2 py-1 text-xs font-semibold ${toneFor(model.dataStatus)}`}>
             {model.dataStatus}
           </span>
         </div>
-
         <div className="flex items-center justify-between gap-2">
           <p className="text-xs uppercase tracking-wide text-slate-400">Execution</p>
           <span className={`rounded-md border px-2 py-1 text-xs font-semibold ${toneFor(model.executionStatus)}`}>

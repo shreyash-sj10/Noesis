@@ -115,11 +115,11 @@ export const getMarketIndices = async () => {
   }
 };
 
-// ─── Professional Price Fetching (Returns INR) ─────────────────────────────
+// ─── Professional Price Fetching (returns spot in INR rupees for charts / legacy callers) ─────────────────────────────
 export const validateSymbol = async (symbol) => {
   if (!symbol) return { isValid: false };
   try {
-    const res = await api.get(`/market/validate?symbol=${symbol}`);
+    const res = await api.get("/market/validate", { params: { symbol } });
     return normalizeResponse(res);
   } catch {
     return { isValid: false };
@@ -130,13 +130,14 @@ export const getStockPriceINR = async (symbol) => {
   if (!symbol) return null;
 
   if (isIndianSymbol(symbol)) {
-    const price = await getIndianStockPrice(symbol);
-    const n = Number(price);
-    if (!price || !Number.isFinite(n) || n <= 0) {
+    const pricePaise = await getIndianStockPrice(symbol);
+    const n = Number(pricePaise);
+    if (pricePaise == null || !Number.isFinite(n) || n <= 0) {
       console.warn("Fallback used", { source: "market" });
       throw new Error("Invalid market data");
     }
-    return n;
+    // NSE/BSE API contract is integer paise; this helper returns rupees to match the US branch (INR float).
+    return n / 100;
   }
 
   // Handle US stocks via Finnhub + Conversion
@@ -177,7 +178,7 @@ export const getHistoricalPrices = async (symbol, timeframe = "1mo") => {
     };
 
     const period = periodMap[timeframe] || "1mo";
-    const res = await api.get(`/market/history?symbol=${symbol}&period=${period}`);
+    const res = await api.get("/market/history", { params: { symbol, period } });
     return normalizeResponse(res);
   } catch {
     return {
@@ -193,7 +194,7 @@ export const searchSymbols = async (query) => {
 
   try {
     const res = await axios.get(
-      `https://finnhub.io/api/v1/search?q=${query}&token=${FINNHUB_KEY}`,
+      `https://finnhub.io/api/v1/search?q=${encodeURIComponent(query)}&token=${FINNHUB_KEY}`,
       { timeout: 5000 }
     );
 
@@ -221,7 +222,9 @@ export const searchSymbols = async (query) => {
 // ─── Market Explorer (Live Snapshots) ─────────────────────────────────────────
 export const getExplorerData = async (limit = 16, offset = 0, query = "") => {
   try {
-    const res = await api.get(`/market/explore?limit=${limit}&offset=${offset}&query=${query}`);
+    const res = await api.get("/market/explore", {
+      params: { limit, offset, ...(query ? { query } : {}) },
+    });
     return normalizeResponse(res);
   } catch {
     throw new Error("Market data unavailable");
@@ -230,7 +233,7 @@ export const getExplorerData = async (limit = 16, offset = 0, query = "") => {
 
 export const getMarketNews = async (symbol = null) => {
   try {
-    const res = await api.get(`/market/news${symbol ? `?symbol=${symbol}` : ''}`);
+    const res = await api.get("/market/news", symbol ? { params: { symbol } } : undefined);
     return normalizeResponse(res);
   } catch {
     return { success: false, state: "PARTIAL", status: "UNAVAILABLE", signals: [] };

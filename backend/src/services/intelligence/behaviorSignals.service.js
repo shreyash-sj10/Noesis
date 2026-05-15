@@ -22,6 +22,7 @@ const intel = SYSTEM_CONFIG.intelligence.preTrade;
  * Used as pre-trade context by the decision engine and guard layer.
  *
  * @param {string|ObjectId} userId
+ * @param {string} [currentSymbol] — when set, revenge risk applies only to the same symbol (NSE-style)
  * @returns {Promise<{
  *   flags: string[],
  *   lastTradePnlPaise: number|null,
@@ -34,10 +35,15 @@ const intel = SYSTEM_CONFIG.intelligence.preTrade;
  *   priceBias: number|null
  * }>}
  */
-const deriveBehaviorSignals = async (userId) => {
+const normalizeSymbolKey = (sym) =>
+  sym ? String(sym).toUpperCase().trim().replace(/\.(NS|BO)$/, "") : null;
+
+const deriveBehaviorSignals = async (userId, currentSymbol = null) => {
   if (!userId) {
     return _emptySignals();
   }
+
+  const normalizedCurrentSymbol = normalizeSymbolKey(currentSymbol);
 
   // ── 1. Fetch recent trades from DB (no mock data, no constants) ────────────
   const now = Date.now();
@@ -60,20 +66,22 @@ const deriveBehaviorSignals = async (userId) => {
   // Window unified with behavior.engine.js via cfg.revengeWindowMinutes.
   const revengeWindowMs = cfg.revengeWindowMinutes * 60 * 1000;
 
-  const lastSell = recentTrades.find(t => t.type === "SELL");
+  const lastSell = recentTrades.find((t) => {
+    if (t.type !== "SELL" || typeof t.pnlPaise !== "number") return false;
+    if (normalizedCurrentSymbol) {
+      return normalizeSymbolKey(t.symbol) === normalizedCurrentSymbol;
+    }
+    return true;
+  });
   let lastTradePnlPaise = null;
   let timeSinceLastTradeMs = null;
   let revengeRisk = false;
 
   if (lastSell) {
-    lastTradePnlPaise = typeof lastSell.pnlPaise === "number" ? lastSell.pnlPaise : null;
+    lastTradePnlPaise = lastSell.pnlPaise;
     timeSinceLastTradeMs = now - new Date(lastSell.createdAt).getTime();
 
-    if (
-      lastTradePnlPaise !== null &&
-      lastTradePnlPaise < 0 &&
-      timeSinceLastTradeMs < revengeWindowMs
-    ) {
+    if (lastTradePnlPaise < 0 && timeSinceLastTradeMs < revengeWindowMs) {
       flags.push("REVENGE_TRADING_RISK");
       revengeRisk = true;
       logger.debug({ action: "BEHAVIOR_SIGNAL", flag: "REVENGE_TRADING_RISK", userId, timeSinceLastTradeMs });

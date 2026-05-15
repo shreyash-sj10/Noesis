@@ -11,7 +11,11 @@ const Trace = require("../../src/models/trace.model");
 const marketDataService = require("../../src/services/marketData.service");
 const { getPrice } = require("../../src/services/price.engine");
 const aiExplanationService = require("../../src/services/aiExplanation.service");
-jest.mock("../../src/services/marketData.service");
+jest.mock("../../src/services/marketData.service", () => ({
+  validateSymbol: jest.fn(),
+  getLivePrices: jest.fn(),
+  getLivePricesForPortfolio: jest.fn(),
+}));
 jest.mock("../../src/services/price.engine", () => ({
   getPrice: jest.fn(),
 }));
@@ -51,7 +55,11 @@ describe("SYSTEM AUDIT — PHASE 1 (TRUTH + ENFORCEMENT)", () => {
     marketDataService.validateSymbol.mockResolvedValue({ isValid: true, data: { pricePaise: 2500 } });
     marketDataService.getLivePrices.mockResolvedValue({
       "RELIANCE.NS": { pricePaise: 2500, source: "REAL", isFallback: false },
-      "TCS.NS": { pricePaise: 3500, source: "REAL", isFallback: false }
+      "TCS.NS": { pricePaise: 3500, source: "REAL", isFallback: false },
+    });
+    marketDataService.getLivePricesForPortfolio.mockResolvedValue({
+      RELIANCE: { pricePaise: 2500, changePercent: 0, source: "REAL", isFallback: false },
+      TCS: { pricePaise: 3500, changePercent: 0, source: "REAL", isFallback: false },
     });
     getPrice.mockResolvedValue({
       pricePaise: 2500,
@@ -154,10 +162,16 @@ describe("SYSTEM AUDIT — PHASE 1 (TRUTH + ENFORCEMENT)", () => {
     ]);
     const ALLOWED_POSITION_KEYS = new Set([
       "symbol",
+      "fullSymbol",
       "quantity",
       "avgPricePaise",
       "currentPricePaise",
+      "investedValuePaise",
+      "unrealizedPnLPaise",
       "pnlPct",
+      "dayChangePct",
+      "isFallback",
+      "source",
     ]);
     /** Top-level keys only — nested snapshots are not legacy "price" fields. */
     const checkContract = (obj, source, allowedKeys) => {

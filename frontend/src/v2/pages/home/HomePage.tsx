@@ -1,21 +1,22 @@
 import { useState, useCallback, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import AppLayout from "../../layout/AppLayout/AppLayout.jsx";
 import { useHomeViewModel } from "./useHomeViewModel";
 import { openDecisionPanel } from "../../trade-flow";
 import { ROUTES } from "../../routing/routes";
-import MetricBlock from "./components/MetricBlock";
+import HomeKpiStrip from "./components/HomeKpiStrip";
 import NextActionPanel from "./components/NextActionPanel";
 import PositionRow from "./components/PositionRow";
 import BehaviorInsight from "./components/BehaviorInsight";
 import SystemStatusBar from "./components/SystemStatusBar";
 import { positionStatusFromDecision, formatEntryInr } from "./mapHomeViewModel";
 import type { DecisionCardProps } from "../../components/decision/DecisionCard";
+import { pnlToneClass } from "../../lib/capitalPlan";
 
 function openPanelFromItem(item: DecisionCardProps): void {
   openDecisionPanel(item.title, {
     decision: item.decision,
-    meta:     item.meta,
+    meta: item.meta,
     warnings: [],
   });
 }
@@ -39,7 +40,7 @@ export default function HomePage() {
     navigate(ROUTES.portfolio);
   }, [navigate]);
 
-  const pnlInterpretation = vm.loading.portfolio
+  const pnlInterpretation = vm.loading.metrics
     ? "Preparing your workspace"
     : vm.systemState.unrealizedPnlDisplay.startsWith("-")
       ? "Slight drawdown vs entries"
@@ -49,39 +50,67 @@ export default function HomePage() {
           ? "Not enough data yet to assess live P&L"
           : "Flat vs entries across open positions";
 
+  const capitalKpis = useMemo(() => {
+    const cp = vm.capitalPlan;
+    return [
+      {
+        label: "Equity",
+        value: vm.systemState.netEquityDisplay,
+        sub: cp ? `${cp.investedDisplay} deployed` : undefined,
+      },
+      {
+        label: "Open P&L",
+        value: cp?.unrealizedDisplay ?? vm.systemState.unrealizedPnlDisplay,
+        sub: pnlInterpretation,
+        valueClassName: cp ? pnlToneClass(cp.unrealizedPnLPaise) : undefined,
+      },
+      {
+        label: "Left to invest",
+        value: cp?.leftToInvestDisplay ?? "—",
+        sub: "Cash available to deploy",
+        valueClassName: "home-kpi-strip__value--accent",
+      },
+      {
+        label: "Cash",
+        value: cp?.cashDisplay ?? "—",
+        sub: "Wallet balance",
+      },
+      {
+        label: "Deployed",
+        value: cp?.investedDisplay ?? "—",
+        sub: "At entry cost",
+      },
+      {
+        label: "Risk",
+        value: vm.systemState.riskStatusHeadline,
+        sub: vm.systemState.riskStatusSub,
+        valueClassName: "home-kpi-strip__value--status",
+      },
+    ];
+  }, [vm.capitalPlan, vm.systemState, pnlInterpretation]);
+
   return (
     <AppLayout>
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-8 p-4 md:p-8">
+      <div className="home-terminal">
         <SystemStatusBar model={vm.systemStatus} />
 
         <NextActionPanel model={vm.nextAction} onReview={onReviewNext} onPrimaryAction={onHeroPrimaryAction} />
 
-        <section className="grid gap-4 md:grid-cols-3" aria-label="Account metrics">
-          <MetricBlock
-            label="Net equity"
-            value={vm.systemState.netEquityDisplay}
-            interpretation={
-              vm.loading.portfolio
-                ? "Preparing your workspace"
-                : "Total account value across cash and open holdings"
-            }
-            isLoading={vm.loading.portfolio}
-          />
-          <MetricBlock
-            label="Unrealized P&L"
-            value={vm.systemState.unrealizedPnlDisplay}
-            interpretation={pnlInterpretation}
-            isLoading={vm.loading.portfolio}
-          />
-          <MetricBlock
-            label="Risk state"
-            value={vm.systemState.riskStatusHeadline}
-            interpretation={vm.systemState.riskStatusSub}
-            isLoading={vm.loading.portfolio}
-          />
+        <section aria-label="Capital at a glance">
+          <HomeKpiStrip items={capitalKpis} isLoading={vm.loading.metrics} />
+          {vm.capitalPlan && !vm.loading.metrics ? (
+            <p className="home-dashboard__plan-line mt-2">
+              <span className="home-dashboard__plan-title">{vm.capitalPlan.planTitle}</span>
+              {" · "}
+              {vm.capitalPlan.planBody}{" "}
+              <Link to={ROUTES.portfolio} className="home-dashboard__plan-link">
+                Full ₹ breakdown on Portfolio →
+              </Link>
+            </p>
+          ) : null}
         </section>
 
-        <div className="grid gap-8 lg:grid-cols-[2fr_1fr]">
+        <div className="home-terminal__grid">
           <section className="space-y-4 rounded-2xl border border-slate-800 bg-slate-950/60 p-6" aria-label="Open positions">
             <header className="space-y-2">
               <h2 className="text-base font-semibold tracking-tight text-slate-100">Active positions</h2>
@@ -89,7 +118,9 @@ export default function HomePage() {
                 Highest risk first. Focus on the position that needs action before scanning for new trades.
               </p>
             </header>
-            {rankedPositions.length === 0 ? (
+            {vm.loading.portfolio && rankedPositions.length === 0 ? (
+              <p className="text-sm text-slate-400">Loading open positions…</p>
+            ) : rankedPositions.length === 0 ? (
               <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
                 <p className="text-sm font-medium text-slate-100">No active positions right now</p>
                 <p className="mt-2 text-sm leading-relaxed text-slate-400">

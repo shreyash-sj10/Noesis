@@ -22,6 +22,12 @@ export type TradeSystemStateHeaderProps = {
   setupGateState?: SetupGateState;
   /** REVIEW phase: server gate passed but submit prerequisites (e.g. emotion) not yet satisfied. */
   executionHeld?: boolean;
+  /** WebSocket quote stream active for this symbol. */
+  quoteStreamActive?: boolean;
+  /** Quote freshness for the header (badges under the price row). */
+  quoteQuality?: "stale" | "cached" | null;
+  /** When false, quote stream / quality badges are hidden (e.g. after fill). */
+  showQuoteMeta?: boolean;
 };
 
 function pct(chg: number | null): string {
@@ -74,6 +80,9 @@ export default function TradeSystemStateHeader({
   executionVerdict,
   setupGateState,
   executionHeld,
+  quoteStreamActive = false,
+  quoteQuality = null,
+  showQuoteMeta = true,
 }: TradeSystemStateHeaderProps) {
   const pill = systemPill(mode, decision, executionVerdict, setupGateState, executionHeld);
   const posture = marketPostureLabel(decision.action);
@@ -100,6 +109,26 @@ export default function TradeSystemStateHeader({
               {pct(changePct)}
             </span>
           </div>
+          {showQuoteMeta && (quoteStreamActive || quoteQuality) ? (
+            <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+              {quoteStreamActive ? (
+                <span className="inline-flex items-center gap-1 rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-300">
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400 motion-safe:animate-pulse" aria-hidden />
+                  Live stream
+                </span>
+              ) : null}
+              {quoteQuality === "stale" ? (
+                <span className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-200">
+                  Stale quote
+                </span>
+              ) : null}
+              {quoteQuality === "cached" ? (
+                <span className="rounded border border-slate-600 bg-slate-900/90 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  Cached
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <span className={`shrink-0 rounded-md border px-2.5 py-1 text-xs font-bold uppercase tracking-wide ${pill.cls}`}>
           {pill.text}

@@ -165,9 +165,15 @@ describe("Institutional Trade Integrity Suite (Full Hardening Audit)", () => {
 
         expect(sellRes.status).toBe(201);
         const sellTrade = sellRes.body.data;
-        expect(sellTrade.pnlPaise).toBeDefined();
+        expect(sellTrade.side).toBe("SELL");
+        expect(sellTrade).toHaveProperty("pnlPaise");
         // Fills use `getPrice` mock (2200000) for both legs → flat round-trip.
+        expect(typeof sellTrade.pnlPaise).toBe("number");
         expect(sellTrade.pnlPaise).toBe(0);
+
+        const persistedSell = await Trade.findById(sellTrade.tradeId).lean();
+        expect(typeof persistedSell?.pnlPaise).toBe("number");
+        expect(persistedSell.pnlPaise).toBe(0);
     }, 20000);
 
     test("2. System Enforcement: Reject Invalid Trade (Bad RR)", async () => {

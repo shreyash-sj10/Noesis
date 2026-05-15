@@ -15,46 +15,11 @@ const { isValidStatus } = require("../../constants/intelligenceStatus");
 const { SYSTEM_CONFIG } = require("../../config/system.config");
 const logger = require("../../utils/logger");
 const AppError = require("../../utils/AppError");
+const { deriveBehaviorSignals } = require("./behaviorSignals.service");
 
 /**
  * PRE-TRADE DECISION SNAPSHOT ENGINE
  */
-const getBehavioralFlags = async (user, currentSymbol) => {
-  const cfg = SYSTEM_CONFIG.intelligence.preTrade;
-  // PHASE 2 FIX: Derive revenge window from the single canonical config value.
-  // behavior.engine.js also uses cfg.behavior.revengeWindowMinutes — same value.
-  const revengeWindowMs = SYSTEM_CONFIG.behavior.revengeWindowMinutes * 60 * 1000;
-  const lastTrades = await Trade.find({ user: user._id }).sort({ createdAt: -1 }).limit(10);
-  const flags = [];
-
-  // H-02 FIX: Only check SELL trades for pnlPaise — BUY trades have pnlPaise=null,
-  // and `null < 0` evaluates to false in JS, silently skipping the revenge check.
-  // H-03 FIX: Only flag revenge for the SAME symbol (mirrors behavior.engine.js
-  // PHASE 4 fix). A loss on RELIANCE should not block a new trade on INFY.
-  const normalizedCurrentSymbol = currentSymbol
-    ? String(currentSymbol).toUpperCase().trim().replace(/\.(NS|BO)$/, "")
-    : null;
-
-  const lastRelevantSell = lastTrades.find((t) => {
-    if (t.type !== "SELL") return false;
-    if (typeof t.pnlPaise !== "number") return false;
-    if (normalizedCurrentSymbol) {
-      const tradeSymbol = String(t.symbol || "").toUpperCase().trim().replace(/\.(NS|BO)$/, "");
-      if (tradeSymbol !== normalizedCurrentSymbol) return false;
-    }
-    return true;
-  });
-
-  if (
-    lastRelevantSell &&
-    lastRelevantSell.pnlPaise < 0 &&
-    Date.now() - new Date(lastRelevantSell.createdAt).getTime() < revengeWindowMs
-  ) {
-    flags.push("REVENGE_TRADING_RISK");
-  }
-  return flags;
-};
-
 const checkTradeRisk = async (tradeRequest, user) => {
   const cfg = SYSTEM_CONFIG.intelligence.preTrade;
   const { 
@@ -77,7 +42,8 @@ const checkTradeRisk = async (tradeRequest, user) => {
   const marketStatus = newsResponse?.status || (consensus ? "VALID" : "UNAVAILABLE");
 
   // LAYER 2: BEHAVIORAL ANALYSIS
-  const behavioralFlags = await getBehavioralFlags(user, symbol);
+  const behaviorSignals = await deriveBehaviorSignals(user._id, symbol);
+  const behavioralFlags = behaviorSignals.flags;
   const adaptiveProfile = await adaptiveEngine.getAdaptiveProfile(user._id);
 
   const history = await Trade.find({ user: user._id })
@@ -88,9 +54,13 @@ const checkTradeRisk = async (tradeRequest, user) => {
   const closedTrades = mapToClosedTrades(chronHistory.map((t) => normalizeTrade(t)));
 
   // LAYER 3: ENTRY ENGINE (Decision ownership, deterministic inputs only)
+  const normalizedProductType =
+    String(productType || "DELIVERY").toUpperCase().trim() === "INTRADAY" ? "INTRADAY" : "DELIVERY";
+
   const entryDecisionBase = evaluateEntryDecision({
     plan: {
       side: type || "BUY",
+      productType: normalizedProductType,
       pricePaise: finalPrice,
       stopLossPaise: finalSL,
       targetPricePaise: finalTP,
@@ -115,6 +85,7 @@ const checkTradeRisk = async (tradeRequest, user) => {
   const entryDecision = evaluateEntryDecision({
     plan: {
       side: type || "BUY",
+      productType: normalizedProductType,
       pricePaise: finalPrice,
       stopLossPaise: finalSL,
       targetPricePaise: finalTP,

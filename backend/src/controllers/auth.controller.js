@@ -11,6 +11,26 @@ const CSRF_COOKIE_NAME = "csrfToken";
 const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || "15m";
 const REFRESH_TOKEN_TTL = process.env.REFRESH_TOKEN_TTL || "7d";
 const REFRESH_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const isProd = process.env.NODE_ENV === "production";
+
+const normalizeSameSite = (rawValue) => {
+  const normalized = String(rawValue || "").trim().toLowerCase();
+  if (normalized === "strict" || normalized === "lax" || normalized === "none") {
+    return normalized;
+  }
+  return isProd ? "none" : "lax";
+};
+
+const configuredSameSite = normalizeSameSite(process.env.AUTH_COOKIE_SAMESITE);
+const cookieSameSite = configuredSameSite === "none" && !isProd ? "lax" : configuredSameSite;
+const cookieDomain = String(process.env.AUTH_COOKIE_DOMAIN || "").trim();
+const baseCookieOptions = {
+  secure: isProd,
+  sameSite: cookieSameSite,
+  maxAge: REFRESH_COOKIE_MAX_AGE_MS,
+  path: "/api/auth",
+  ...(cookieDomain ? { domain: cookieDomain } : {}),
+};
 
 // H-07 FIX: Hash the refresh token before storing it in the DB.
 // Previously the raw JWT was stored, meaning a DB read gave a full session token
@@ -31,29 +51,24 @@ const generateTokens = (userId) => {
 
 const setRefreshCookie = (res, refreshToken) => {
   res.cookie(REFRESH_COOKIE_NAME, refreshToken, {
+    ...baseCookieOptions,
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: REFRESH_COOKIE_MAX_AGE_MS,
-    path: "/api/auth",
   });
 };
 
 const setCsrfCookie = (res, csrfToken) => {
   res.cookie(CSRF_COOKIE_NAME, csrfToken, {
+    ...baseCookieOptions,
     httpOnly: false,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: REFRESH_COOKIE_MAX_AGE_MS,
-    path: "/api/auth",
   });
 };
 
 const clearAuthCookies = (res) => {
   const cookieOptions = {
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
+    secure: isProd,
+    sameSite: cookieSameSite,
     path: "/api/auth",
+    ...(cookieDomain ? { domain: cookieDomain } : {}),
   };
   res.clearCookie(REFRESH_COOKIE_NAME, { ...cookieOptions, httpOnly: true });
   res.clearCookie(CSRF_COOKIE_NAME, { ...cookieOptions, httpOnly: false });

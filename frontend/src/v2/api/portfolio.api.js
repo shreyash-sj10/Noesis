@@ -7,6 +7,6 @@ export const getPortfolioSummary = async () => {
 };
 
 export const getPositions = async () => {
-    const response = await api.get("/portfolio/positions");
+    const response = await api.get("/portfolio/positions", { timeout: 12_000 });
     return normalizeResponse(response);
 };

@@ -145,6 +145,7 @@ const resolvePrice = async (symbol) => {
   if (cached?.tier === "HOT" && hasCachedQuote) {
     return {
       pricePaise: cached.data.pricePaise,
+      changePercent: Number(cached.data.changePercent) || 0,
       source: "CACHE",
       isFallback: Boolean(cached.data.isFallback),
       isStale: false,
@@ -155,6 +156,7 @@ const resolvePrice = async (symbol) => {
     const quote = await getStockSnapshot(symbol);
     return {
       pricePaise: quote.pricePaise,
+      changePercent: Number(quote.changePercent) || 0,
       source: quote.isFallback ? "FALLBACK" : "REAL",
       isFallback: Boolean(quote.isFallback),
       isStale: false,
@@ -163,6 +165,7 @@ const resolvePrice = async (symbol) => {
     if (hasCachedQuote && (cached?.tier === "STALE" || cached?.tier === "HOT")) {
       return {
         pricePaise: cached.data.pricePaise,
+        changePercent: Number(cached.data.changePercent) || 0,
         source: "STALE",
         isFallback: true,
         isStale: true,
@@ -171,6 +174,44 @@ const resolvePrice = async (symbol) => {
 
     if (error instanceof AppError) throw error;
     throw new AppError("MARKET_DATA_UNAVAILABLE", 503);
+  }
+};
+
+const quoteFromCacheEntry = (cached) => {
+  const hasCachedQuote = Boolean(
+    cached?.data &&
+    Number.isInteger(cached.data.pricePaise) &&
+    cached.data.pricePaise > 100,
+  );
+  if (!hasCachedQuote) return null;
+  const isStale = cached.tier === "STALE";
+  return {
+    pricePaise: cached.data.pricePaise,
+    changePercent: Number(cached.data.changePercent) || 0,
+    source: isStale ? "STALE" : "CACHE",
+    isFallback: Boolean(cached.data.isFallback) || isStale,
+    isStale,
+  };
+};
+
+const PORTFOLIO_QUOTE_BUDGET_MS = 2500;
+
+const resolvePriceForPortfolio = async (symbol) => {
+  const apiSymbol = normalizeSymbol(symbol);
+  const cached = await getQuoteCache(apiSymbol);
+  const fromCache = quoteFromCacheEntry(cached);
+  if (fromCache && cached?.tier === "HOT") return fromCache;
+
+  try {
+    const resolved = await Promise.race([
+      resolvePrice(symbol),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("PORTFOLIO_QUOTE_TIMEOUT")), PORTFOLIO_QUOTE_BUDGET_MS);
+      }),
+    ]);
+    return resolved;
+  } catch {
+    return fromCache || null;
   }
 };
 
@@ -184,6 +225,27 @@ const resolvePrices = async (symbols = []) => {
 
   const map = {};
   pairs.forEach(([normalized, resolved]) => {
+    const base = (normalized || "").split(".")[0];
+    if (base) map[base] = resolved;
+    if (normalized) map[normalized] = resolved;
+  });
+  return map;
+};
+
+/** Portfolio HTTP path: cache-first, bounded wait — never block UI on Yahoo. */
+const resolvePricesForPortfolio = async (symbols = []) => {
+  if (!symbols.length) return {};
+  const pairs = await Promise.all(
+    symbols.map(async (symbol) => {
+      const resolved = await resolvePriceForPortfolio(symbol);
+      const normalized = normalizeSymbol(symbol);
+      return [normalized, resolved];
+    }),
+  );
+
+  const map = {};
+  pairs.forEach(([normalized, resolved]) => {
+    if (!resolved) return;
     const base = (normalized || "").split(".")[0];
     if (base) map[base] = resolved;
     if (normalized) map[normalized] = resolved;
@@ -563,13 +625,19 @@ const getLivePrices = async (symbols = []) => {
   return await resolvePrices(symbols);
 };
 
+const getLivePricesForPortfolio = async (symbols = []) => {
+  return await resolvePricesForPortfolio(symbols);
+};
+
 module.exports = {
   resolvePrice,
   resolvePrices,
+  resolvePricesForPortfolio,
   getStockSnapshot,
   getExploreData,
   getLivePrice,
   getLivePrices,
+  getLivePricesForPortfolio,
   getHistorical,
   getFundamentals,
   validateSymbol,

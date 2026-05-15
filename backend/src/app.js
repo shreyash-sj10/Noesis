@@ -27,10 +27,20 @@ app.get("/metrics", (req, res) => {
 const cors = require("cors");
 app.set("etag", false);
 
-// In production (FRONTEND_URL set) allow only the deployed origin.
-// In development (no FRONTEND_URL) allow the common Vite dev ports.
-const corsOrigins = process.env.FRONTEND_URL
-  ? [process.env.FRONTEND_URL]
+const splitCsv = (value) =>
+  String(value || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+// Production: allow one or many explicit frontend origins via FRONTEND_URL / FRONTEND_URLS.
+// Development fallback: common Vite ports.
+const configuredOrigins = [
+  ...splitCsv(process.env.FRONTEND_URL),
+  ...splitCsv(process.env.FRONTEND_URLS),
+];
+const corsOrigins = configuredOrigins.length
+  ? [...new Set(configuredOrigins)]
   : ["http://localhost:5173", "http://localhost:5174", "http://localhost:5180"];
 
 app.use(

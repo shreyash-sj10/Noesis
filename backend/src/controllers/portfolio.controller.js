@@ -1,7 +1,7 @@
 const User = require("../models/user.model");
 const Holding = require("../models/holding.model");
 const Trade = require("../models/trade.model");
-const { getLivePrices } = require("../services/marketData.service");
+const { getLivePrices, getLivePricesForPortfolio } = require("../services/marketData.service");
 const Decimal = require("decimal.js");
 const { analyzeBehavior } = require("../services/behavior.engine");
 const { analyzeProgression } = require("../services/progression.engine");
@@ -20,11 +20,34 @@ const { RECENT_TRADE_SNAPSHOT_BYPASS_MS } = require("../constants/systemConverge
 const logger = require("../utils/logger");
 const { sendSuccess } = require("../utils/response.helper");
 
+const PORTFOLIO_LIVE_PRICES_MAX_MS = 8000;
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => {
+      setTimeout(() => resolve(null), ms);
+    }),
+  ]);
+}
+
 /** Never fail portfolio HTTP because Yahoo throttled; MTM falls back to avg cost. */
-async function safeLivePrices(symbols) {
+async function safeLivePrices(symbols, { forPositions = false } = {}) {
   if (!symbols.length) return {};
+  const fetcher = forPositions ? getLivePricesForPortfolio : getLivePrices;
+  const budgetMs = forPositions ? PORTFOLIO_LIVE_PRICES_MAX_MS : PORTFOLIO_LIVE_PRICES_MAX_MS * 2;
   try {
-    return await getLivePrices(symbols);
+    const result = await withTimeout(fetcher(symbols), budgetMs);
+    if (result === null) {
+      logger.warn({
+        action: "PORTFOLIO_LIVE_PRICES_TIMEOUT",
+        symbolCount: symbols.length,
+        budgetMs,
+        forPositions,
+      });
+      return {};
+    }
+    return result;
   } catch (err) {
     logger.warn({
       action: "PORTFOLIO_LIVE_PRICES_FALLBACK",
@@ -58,7 +81,7 @@ const getPortfolioSummary = async (req, res, next) => {
 
     // 1. Get Live Prices
     const holdingSymbols = holdingsDocs.map((h) => h.symbol);
-    const livePrices = await safeLivePrices(holdingSymbols);
+    const livePrices = await safeLivePrices(holdingSymbols, { forPositions: true });
 
     // 2. Compute MTM
     let unrealizedPnL = new Decimal(0);
@@ -177,19 +200,21 @@ const getPortfolioSummary = async (req, res, next) => {
       positions: holdingsDocs.map((data) => {
         const liveQuote = livePrices[data.symbol];
         const livePrice = liveQuote?.pricePaise;
+        const investedVal = new Decimal(data.quantity).mul(data.avgPricePaise);
+        const currentVal = new Decimal(data.quantity).mul(livePrice !== undefined ? livePrice : data.avgPricePaise);
         return {
           currentPricePaise: livePrice !== undefined ? livePrice : data.avgPricePaise,
           isFallback: livePrice === undefined || Boolean(liveQuote?.isFallback),
-          investedValuePaise: Number(new Decimal(data.quantity).mul(data.avgPricePaise)),
-          currentValuePaise: Number(new Decimal(data.quantity).mul(livePrice !== undefined ? livePrice : data.avgPricePaise)),
-          unrealizedPnL: Number(new Decimal(data.quantity).mul(livePrice !== undefined ? livePrice : data.avgPricePaise).sub(new Decimal(data.quantity).mul(data.avgPricePaise))),
+          investedValuePaise: Math.round(Number(investedVal)),
+          currentValuePaise: Math.round(Number(currentVal)),
+          unrealizedPnL: Math.round(Number(currentVal.sub(investedVal))),
           pnlPct: 0,
         };
       }),
       summary: {
         realizedPnL: user.realizedPnL || 0,
-        unrealizedPnL: Number(unrealizedPnL.toFixed(2)),
-        netEquity: Number(new Decimal(user.balance).add(currentEquityValue).toFixed(2)),
+        unrealizedPnL: Math.round(Number(unrealizedPnL)),
+        netEquity: Math.round(Number(new Decimal(user.balance).add(currentEquityValue))),
         winRate,
         skillAudit,
         behaviorInsights: behavior,
@@ -215,8 +240,8 @@ const getPortfolioSummary = async (req, res, next) => {
       balance: availableBalance,
       totalInvested: user.totalInvested || 0,
       realizedPnL: user.realizedPnL || 0,
-      unrealizedPnL: Number(unrealizedPnL.toFixed(2)),
-      netEquity: Number(new Decimal(user.balance).add(currentEquityValue).toFixed(2)),
+      unrealizedPnL: Math.round(Number(unrealizedPnL)),
+      netEquity: Math.round(Number(new Decimal(user.balance).add(currentEquityValue))),
       winRate,
       holdings: holdingsPositions,
       skillAudit,
@@ -298,12 +323,17 @@ const getPositions = async (req, res, next) => {
     }
 
     // Fetch live prices (non-fatal: empty map → cost-basis MTM in map below)
-    const livePrices = await safeLivePrices(holdingSymbols);
+    const livePricesRaw = await safeLivePrices(holdingSymbols, { forPositions: true });
+    const livePrices = livePricesRaw && typeof livePricesRaw === "object" ? livePricesRaw : {};
 
     const positions = holdingsDocs.map((data) => {
       const symbol = data.symbol;
       const liveQuote = livePrices[symbol];
       const livePrice = liveQuote?.pricePaise;
+      const dayChangePct =
+        liveQuote?.changePercent != null && Number.isFinite(Number(liveQuote.changePercent))
+          ? Number(liveQuote.changePercent)
+          : null;
 
       // Fallback: Use avgCost as currentPrice if live fetch failed
       const currentPrice = livePrice !== undefined ? livePrice : data.avgPricePaise;
@@ -332,7 +362,8 @@ const getPositions = async (req, res, next) => {
         investedValuePaise: Math.round(investedValue),
         currentValuePaise: Math.round(currentValue),
         unrealizedPnL: Math.round(unrealizedPnL),
-        pnlPct: investedValue > 0 ? Number(((unrealizedPnL / investedValue) * 100).toFixed(2)) : 0
+        pnlPct: investedValue > 0 ? Number(((unrealizedPnL / investedValue) * 100).toFixed(2)) : 0,
+        dayChangePct,
       };
     });
 

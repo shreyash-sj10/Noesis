@@ -3,7 +3,7 @@ import { X, Loader, CheckCircle, AlertTriangle } from "lucide-react";
 import type { TradePanelContext } from "../../trade-flow";
 import { useMarketQuote } from "../../hooks/useMarketQuote";
 import { useJournalPage } from "../../hooks/useJournalDecisions";
-import { usePortfolioSummary } from "../../hooks/usePortfolioSummary";
+import { EMPTY_PORTFOLIO_SUMMARY, usePortfolioSummary } from "../../hooks/usePortfolioSummary";
 import { usePortfolioDecisions } from "../../pages/portfolio/usePortfolioDecisions";
 import { buildTradingSystemPolicy } from "../../behavior/behavioralSystemPolicy";
 import { runPreTrade, executeTrade, getTradeExecutionStatus } from "../../api/trade.api";
@@ -47,7 +47,8 @@ type Props = {
 
 export default function DecisionPanel({ open, symbol, context, onClose, backdrop = "default" }: Props) {
   const journal = useJournalPage();
-  const { summary: portfolio } = usePortfolioSummary();
+  const { summary: portfolioRaw } = usePortfolioSummary();
+  const portfolio = portfolioRaw ?? EMPTY_PORTFOLIO_SUMMARY;
   const portfolioDecisions = usePortfolioDecisions();
   const systemPolicy = useMemo(
     () => buildTradingSystemPolicy(journal.logs, journal.engine, portfolio),
@@ -56,7 +57,7 @@ export default function DecisionPanel({ open, symbol, context, onClose, backdrop
   const thesisMin = systemPolicy.behaviorLayer.thesisMinChars;
   const scalingBlocked = systemPolicy.behaviorLayer.scalingBlocked;
 
-  const { quote } = useMarketQuote(open ? symbol : null);
+  const { quote, isStreaming } = useMarketQuote(open ? symbol : null);
   const livePriceINR = quote ? fromPaise(quote.pricePaise).toFixed(2) : "";
   const sharedIntel = useSymbolIntelligence(open ? symbol : null);
   const [side, setSide] = useState<"BUY" | "SELL">("BUY");
@@ -176,11 +177,15 @@ export default function DecisionPanel({ open, symbol, context, onClose, backdrop
     ) {
       return `₹${fromPaise(executedPricePaise).toFixed(2)} (executed)`;
     }
-    let line = headerPrice;
-    if (quote?.isStale) line = `${line} · stale quote`;
-    else if (quote?.source === "CACHE" || quote?.isFallback) line = `${line} · cached quote`;
-    return line;
-  }, [phase, submissionOutcome, executedPricePaise, headerPrice, quote?.isStale, quote?.source, quote?.isFallback]);
+    return headerPrice;
+  }, [phase, submissionOutcome, executedPricePaise, headerPrice]);
+
+  const headerQuoteQuality = useMemo((): "stale" | "cached" | null => {
+    if (!quote) return null;
+    if (quote.isStale) return "stale";
+    if (quote.source === "CACHE" || quote.isFallback) return "cached";
+    return null;
+  }, [quote]);
 
   const changePct = context?.meta?.changePct ?? null;
   const decision = context?.decision ?? { action: "GUIDE" as const, confidence: 0, reason: "" };
@@ -573,6 +578,9 @@ export default function DecisionPanel({ open, symbol, context, onClose, backdrop
           executionVerdict={headerExecutionVerdict}
           setupGateState={phase === "SETUP" ? setupGateState : undefined}
           executionHeld={phase === "REVIEW" ? !canExecute : undefined}
+          quoteStreamActive={isStreaming}
+          quoteQuality={headerQuoteQuality}
+          showQuoteMeta={phase !== "SUCCESS"}
         />
 
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">

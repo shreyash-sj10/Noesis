@@ -1,6 +1,18 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import api from "../api/api.js";
 import { queryKeys } from "../queryKeys";
+import {
+  readPortfolioSummaryCache,
+  writePortfolioSummaryCache,
+} from "../lib/portfolioSummaryCache";
+import { useAuth } from "../../features/auth/useAuth.jsx";
+
+/** Integer paise fields — backend `adaptPortfolio` uses *Paise* / legacy aliases on some keys. */
+function toPaiseInt(n: unknown): number {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return 0;
+  return Math.round(v);
+}
 
 export type PendingOrderSummary = {
   tradeId: string;
@@ -28,7 +40,8 @@ export type PortfolioSummary = {
   pendingOrders: PendingOrderSummary[];
 };
 
-const EMPTY: PortfolioSummary = {
+/** Safe default when summary is still loading or unavailable (e.g. policy / risk layers). */
+export const EMPTY_PORTFOLIO_SUMMARY: PortfolioSummary = {
   netEquityPaise: 0,
   balancePaise: 0,
   unrealizedPnLPaise: 0,
@@ -40,44 +53,69 @@ const EMPTY: PortfolioSummary = {
   pendingOrders: [],
 };
 
-async function fetchSummary(): Promise<PortfolioSummary> {
+/**
+ * Single source of truth for mapping `GET /portfolio/summary` JSON (`res.data.data`)
+ * to UI `PortfolioSummary` (integer paise + `formatINR` divides by 100 for ₹).
+ */
+export function mapPortfolioSummaryPayload(d: unknown): PortfolioSummary | null {
+  if (d == null || typeof d !== "object") return null;
+  const row = d as Record<string, unknown>;
+  const rawPending = Array.isArray(row.pendingOrders)
+    ? (row.pendingOrders as PendingOrderSummary[])
+    : [];
+  return {
+    netEquityPaise: toPaiseInt(row.netEquity ?? row.totalValuePaise),
+    balancePaise: toPaiseInt(row.balancePaise ?? row.balance),
+    unrealizedPnLPaise: toPaiseInt(row.unrealizedPnLPaise ?? row.unrealizedPnL),
+    realizedPnLPaise: toPaiseInt(row.realizedPnLPaise ?? row.realizedPnL),
+    totalInvestedPaise: toPaiseInt(row.totalInvestedPaise ?? row.totalInvested),
+    totalPnlPct: Number(row.totalPnlPct ?? 0),
+    winRate: Number(row.winRate ?? 0),
+    isDegraded: false,
+    pendingOrders: rawPending,
+  };
+}
+
+/** Shared queryFn — also used by `fetchPortfolioWithAccountSummary` to avoid duplicate HTTP + drift. */
+export async function fetchPortfolioSummaryForQuery(): Promise<PortfolioSummary> {
   try {
-    const res = await api.get("/portfolio/summary");
-    const d = res?.data?.data;
-    if (!d) return { ...EMPTY };
-    const rawPending = Array.isArray((d as { pendingOrders?: unknown }).pendingOrders)
-      ? (d as { pendingOrders: PendingOrderSummary[] }).pendingOrders
-      : [];
-    // Backend `adaptPortfolio` exposes cash as `balancePaise` (see portfolio.adapter.js).
-    // Raw controller fields use `balance` / `netEquity` — accept both for resilience.
-    return {
-      netEquityPaise:      Number(d.netEquity ?? d.totalValuePaise ?? 0),
-      balancePaise:        Number(d.balancePaise ?? d.balance ?? 0),
-      unrealizedPnLPaise:  Number(d.unrealizedPnL ?? d.unrealizedPnLPaise ?? 0),
-      realizedPnLPaise:    Number(d.realizedPnL ?? d.realizedPnLPaise ?? 0),
-      totalInvestedPaise:  Number(d.totalInvested ?? d.totalInvestedPaise ?? 0),
-      totalPnlPct:         Number(d.totalPnlPct ?? 0),
-      winRate:             Number(d.winRate ?? 0),
-      isDegraded: false,
-      pendingOrders: rawPending,
-    };
+    const res = await api.get("/portfolio/summary", { timeout: 15_000 });
+    const mapped = mapPortfolioSummaryPayload(res?.data?.data);
+    if (!mapped) return { ...EMPTY_PORTFOLIO_SUMMARY, isDegraded: true };
+    writePortfolioSummaryCache(mapped);
+    return mapped;
   } catch {
-    return { ...EMPTY };
+    const cached = readPortfolioSummaryCache();
+    if (cached) return cached;
+    return { ...EMPTY_PORTFOLIO_SUMMARY, isDegraded: true };
   }
 }
 
 export function usePortfolioSummary() {
+  const { user, isLoading: authLoading } = useAuth();
+
   const q = useQuery({
     queryKey: queryKeys.portfolioSummary,
-    queryFn: fetchSummary,
-    staleTime: 30_000,
+    queryFn: fetchPortfolioSummaryForQuery,
+    enabled: !authLoading && Boolean(user),
+    staleTime: 60_000,
+    gcTime: 10 * 60_000,
     retry: 1,
     refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
+    initialData: () => readPortfolioSummaryCache() ?? undefined,
+    initialDataUpdatedAt: () =>
+      readPortfolioSummaryCache() ? Date.now() - 60_000 : undefined,
   });
 
+  const summary = q.data ?? readPortfolioSummaryCache() ?? null;
+  const hasSummary = summary != null;
+  const isInitialLoad = q.isPending && !hasSummary;
+
   return {
-    summary: q.data ?? EMPTY,
-    isLoading: q.isPending,
-    isError: q.isError,
+    summary: hasSummary ? summary : null,
+    isLoading: isInitialLoad,
+    isFetching: q.isFetching,
+    isError: q.isError && !hasSummary,
   };
 }

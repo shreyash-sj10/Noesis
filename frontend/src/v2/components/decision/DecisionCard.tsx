@@ -12,6 +12,10 @@ export type DecisionMeta = {
   journalInsight?: string;
   /** Average entry from /portfolio/positions (paise) */
   avgPricePaise?: number;
+  currentPricePaise?: number;
+  unrealizedPnLPaise?: number;
+  dayChangePct?: number | null;
+  isFallback?: boolean;
 };
 
 export type DecisionCardProps = {

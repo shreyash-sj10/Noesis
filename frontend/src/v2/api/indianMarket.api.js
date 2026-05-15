@@ -11,10 +11,12 @@ const toApiSymbol = (symbol) => {
 };
 
 // ─── Single Stock Full Detail ─────────────────────────────────────────────────
+/** Backend canonical quote: integer `pricePaise` (100 paise = ₹1). */
 export const getIndianStockDetail = async (symbol) => {
   try {
-    const res = await api.get(`/market/stock/${toApiSymbol(symbol)}`);
-    return normalizeResponse(res); 
+    const sym = toApiSymbol(symbol);
+    const res = await api.get("/market/validate", { params: { symbol: sym } });
+    return normalizeResponse(res);
   } catch (error) {
     console.error(`[Frontend API] Detail fetch failed for ${symbol}:`, error.message);
     return null;
@@ -22,34 +24,58 @@ export const getIndianStockDetail = async (symbol) => {
 };
 
 // ─── Single Stock Price Only ──────────────────────────────────────────────────
+/** Integer paise only — never fall back to ambiguous `last_price` fields (often rupees). */
 export const getIndianStockPrice = async (symbol) => {
   const detail = await getIndianStockDetail(symbol);
-  const directPrice = detail?.data?.pricePaise ?? detail?.data?.last_price ?? detail?.last_price;
-  return directPrice ?? null;
+  const quote = detail?.data;
+  const p = quote && typeof quote.pricePaise === "number" ? quote.pricePaise : null;
+  if (p == null || !Number.isFinite(p)) return null;
+  return Math.round(p);
 };
 
 // ─── Batch Fetch ─────────────────────────────────────────────────────────────
+/** Same paise contract as `/market/validate`; chunked to avoid rate-limit bursts. */
+const BATCH_CONCURRENCY = 6;
+
 export const getIndianStockBatch = async (symbols) => {
   if (!symbols || symbols.length === 0) return {};
 
   try {
-    const apiSymbols = symbols.map(toApiSymbol).join(",");
-    const res = await api.get(`/market/batch?symbols=${apiSymbols}`);
-    return normalizeResponse(res);
+    const unique = [...new Set(symbols.map(toApiSymbol))];
+    const out = {};
+    for (let i = 0; i < unique.length; i += BATCH_CONCURRENCY) {
+      const slice = unique.slice(i, i + BATCH_CONCURRENCY);
+      const pairs = await Promise.all(
+        slice.map(async (sym) => {
+          const paise = await getIndianStockPrice(sym);
+          return [sym, paise != null ? { pricePaise: paise } : null];
+        }),
+      );
+      for (const [sym, row] of pairs) {
+        if (row) out[sym] = row;
+      }
+    }
+    return out;
   } catch (error) {
-    console.error('[Frontend API] Batch fetch failed:', error.message);
+    console.error("[Frontend API] Batch fetch failed:", error.message);
     return {};
   }
 };
 
 // ─── Search Stocks ────────────────────────────────────────────────────────────
+/** Uses `/market/explore` (Nifty-500 filter) — there is no `/market/search` route on this API. */
 export const searchIndianStocks = async (query) => {
-  if (!query) return [];
+  const q = String(query || "").trim();
+  if (!q) return [];
   try {
-    const res = await api.get(`/market/search?q=${query}`);
-    return normalizeResponse(res);
+    const res = await api.get("/market/explore", {
+      params: { limit: 24, offset: 0, query: q },
+    });
+    const body = normalizeResponse(res);
+    const stocks = body?.stocks;
+    return Array.isArray(stocks) ? stocks : [];
   } catch (error) {
-    console.error('[Frontend API] Search failed:', error.message);
+    console.error("[Frontend API] Search failed:", error.message);
     return [];
   }
 };

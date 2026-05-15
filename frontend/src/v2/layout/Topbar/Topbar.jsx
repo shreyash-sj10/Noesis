@@ -2,6 +2,7 @@ import { LogOut } from "lucide-react";
 import { useAuth } from "../../../features/auth/useAuth.jsx";
 import { useTickerData } from "../../hooks/useTickerData";
 import { usePortfolioSummary } from "../../hooks/usePortfolioSummary";
+import { useMarketSession, topbarSessionLabel } from "../../hooks/useMarketSession";
 import { formatINR } from "../../../utils/currency.utils";
 
 function TickerBand({ items }) {
@@ -36,10 +37,25 @@ function TickerBand({ items }) {
 export default function Topbar() {
   const { logout } = useAuth();
   const { ticker } = useTickerData();
-  const { summary, isLoading: summaryLoading } = usePortfolioSummary();
+  const { summary, isLoading: summaryLoading, isError: summaryError } = usePortfolioSummary();
+  const { data: session, isLoading: sessionLoading, isError: sessionError } = useMarketSession();
+  const sessionOpen = session?.isMarketOpen === true;
+  const sessionLabel = topbarSessionLabel(session, sessionLoading);
+  const sessionTitle = sessionLoading
+    ? "Loading NSE session (IST)…"
+    : sessionError || !session
+      ? "Session unknown — paper sim only; quotes may be cached or delayed."
+      : sessionOpen
+        ? "NSE cash session is open (IST). Quotes may stream when connected."
+        : "NSE cash session is closed (IST). Header does not mean live trading; quotes may still refresh from cache.";
 
   const balancePaise = Number(summary?.balancePaise ?? 0);
-  const cashDisplay = summaryLoading ? "…" : formatINR(Number.isFinite(balancePaise) ? balancePaise : 0);
+  const cashDisplay =
+    !summary && summaryLoading
+      ? "…"
+      : summaryError && !summary
+        ? "—"
+        : formatINR(Number.isFinite(balancePaise) ? balancePaise : 0);
 
   return (
     <header className="topbar">
@@ -55,9 +71,12 @@ export default function Topbar() {
 
       {/* ── RIGHT: balance + actions ─────────────────────── */}
       <div className="topbar__right">
-        <span className="topbar-status" title="Indicative quotes (may be cached). Paper simulation — India / NSE-oriented, IST.">
+        <span
+          className={`topbar-status${sessionOpen ? " topbar-status--open" : " topbar-status--closed"}`}
+          title={sessionTitle}
+        >
           <span className="topbar-status__dot" aria-hidden="true" />
-          <span className="topbar-status__label">LIVE</span>
+          <span className="topbar-status__label">{sessionLabel}</span>
         </span>
         <span
           className="topbar-balance"

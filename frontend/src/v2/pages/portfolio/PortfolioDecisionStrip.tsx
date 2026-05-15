@@ -1,5 +1,6 @@
 import type { DecisionCardProps } from "../../components/decision/DecisionCard";
 import type { PendingOrderSummary } from "../../hooks/usePortfolioSummary";
+import { formatSignedINR, fromPaise } from "../../../utils/currency.utils";
 import { formatEntryInr } from "../home/mapHomeViewModel";
 
 export type PlanTier = "breach" | "at-risk" | "within-plan";
@@ -17,9 +18,9 @@ function systemContextLine(tier: PlanTier): string {
 }
 
 function statusLabel(tier: PlanTier): string {
-  if (tier === "breach") return "Execution Locked";
-  if (tier === "at-risk") return "Needs Review";
-  return "Controlled";
+  if (tier === "breach") return "Needs attention";
+  if (tier === "at-risk") return "Needs review";
+  return "On plan";
 }
 
 type Props = {
@@ -109,7 +110,7 @@ function alignmentLabel(verdict: string | null | undefined): string {
   const v = (verdict || "").toUpperCase();
   if (v === "ACT") return "Controlled";
   if (v === "GUIDE") return "Needs review";
-  if (v === "BLOCK") return "Execution Locked";
+  if (v === "BLOCK") return "Needs attention";
   return "Unknown";
 }
 
@@ -131,7 +132,7 @@ function closedInsight(trade: ClosedStripTrade): string {
   if (pnl != null && pnl < 0 && impulsiveBehavior) return "Low edge trade";
   if (pnl != null && pnl < 0 && verdict === "GUIDE") return "Premature exit";
   if (pnl != null && pnl > 0 && verdict === "ACT") return "Controlled follow-through";
-  if (verdict === "BLOCK") return "Execution Locked warning breached before close";
+  if (verdict === "BLOCK") return "Risk plan breached before close";
   return "Review setup quality and exit timing";
 }
 
@@ -187,21 +188,52 @@ export function PortfolioClosedStrip({ trade, formatExitInr, formatPnlInr }: Clo
   );
 }
 
+function formatLtp(paise: number | undefined): string {
+  if (paise == null || !Number.isFinite(paise) || paise <= 0) return "—";
+  return `₹${fromPaise(paise).toFixed(2)}`;
+}
+
+function formatDayPct(day: number | null | undefined): { text: string; cls: string } {
+  if (day == null || !Number.isFinite(day)) {
+    return { text: "—", cls: "portfolio-metric__value--flat" };
+  }
+  const pos = day > 0;
+  const neg = day < 0;
+  return {
+    text: `${pos ? "+" : ""}${day.toFixed(2)}%`,
+    cls: pos
+      ? "portfolio-metric__value--pos"
+      : neg
+        ? "portfolio-metric__value--neg"
+        : "portfolio-metric__value--flat",
+  };
+}
+
+function pnlValueClass(value: number): string {
+  if (value > 0) return "portfolio-metric__value--pos";
+  if (value < 0) return "portfolio-metric__value--neg";
+  return "portfolio-metric__value--flat";
+}
+
 export default function PortfolioDecisionStrip({ item, onReview }: Props) {
   const tier = planTierFromAction(item.decision?.action);
   const pnl = item.meta?.pnlPct ?? 0;
   const pnlPos = pnl > 0;
   const pnlCls =
     pnlPos
-      ? "portfolio-strip__pnl portfolio-strip__pnl--pos"
+      ? "portfolio-strip__pnl portfolio-strip__pnl--pos portfolio-strip__pnl--compact"
       : pnl < 0
-        ? "portfolio-strip__pnl portfolio-strip__pnl--neg"
-        : "portfolio-strip__pnl portfolio-strip__pnl--flat";
+        ? "portfolio-strip__pnl portfolio-strip__pnl--neg portfolio-strip__pnl--compact"
+        : "portfolio-strip__pnl portfolio-strip__pnl--flat portfolio-strip__pnl--compact";
   const pnlStr = `${pnlPos ? "+" : ""}${pnl.toFixed(2)}%`;
   const qty = item.meta?.quantity;
   const entry = formatEntryInr(item.meta?.avgPricePaise);
-  const entryLine =
-    qty != null && Number.isFinite(qty) && qty > 0 ? `${entry} · ${qty}u` : entry;
+  const ltp = formatLtp(item.meta?.currentPricePaise);
+  const day = formatDayPct(item.meta?.dayChangePct ?? item.meta?.changePct);
+  const unreal = item.meta?.unrealizedPnLPaise;
+  const unrealStr =
+    unreal != null && Number.isFinite(unreal) ? formatSignedINR(unreal) : "—";
+  const stale = item.meta?.isFallback;
 
   return (
     <article
@@ -211,15 +243,52 @@ export default function PortfolioDecisionStrip({ item, onReview }: Props) {
       <div className="portfolio-decision-strip__accent" aria-hidden />
       <div className="portfolio-decision-strip__body">
         <div className="portfolio-decision-strip__left">
-          <div className="portfolio-decision-strip__symbol">{item.title}</div>
-          <div className="portfolio-decision-strip__entry">{entryLine}</div>
+          <button
+            type="button"
+            className="portfolio-decision-strip__symbol-btn"
+            onClick={onReview}
+            title={`Open ${item.title} in trade terminal`}
+          >
+            {item.title}
+          </button>
           <p className="portfolio-decision-strip__context">{systemContextLine(tier)}</p>
+          <dl className="portfolio-position-metrics" aria-label={`${item.title} position metrics`}>
+            <div>
+              <dt>LTP</dt>
+              <dd>
+                {ltp}
+                {stale ? <span className="portfolio-metric__hint"> est.</span> : null}
+              </dd>
+            </div>
+            <div>
+              <dt>Today</dt>
+              <dd className={day.cls}>{day.text}</dd>
+            </div>
+            <div>
+              <dt>Entry</dt>
+              <dd>{entry}</dd>
+            </div>
+            <div>
+              <dt>Qty</dt>
+              <dd>{qty != null && qty > 0 ? qty : "—"}</dd>
+            </div>
+            <div>
+              <dt>Unrealized</dt>
+              <dd className={pnlValueClass(unreal ?? 0)}>{unrealStr}</dd>
+            </div>
+            <div>
+              <dt>Since entry</dt>
+              <dd className={pnlValueClass(pnl)}>{pnlStr}</dd>
+            </div>
+          </dl>
         </div>
         <div className="portfolio-decision-strip__center">
           <span className={`portfolio-strip-badge portfolio-strip-badge--${tier}`}>
             {statusLabel(tier)}
           </span>
-          <div className={pnlCls}>{pnlStr}</div>
+          <div className={pnlCls} aria-label="P and L since entry">
+            {pnlStr}
+          </div>
         </div>
         <div className="portfolio-decision-strip__right">
           <button type="button" className="portfolio-strip__cta" onClick={onReview}>

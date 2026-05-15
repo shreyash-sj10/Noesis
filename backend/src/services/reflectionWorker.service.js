@@ -50,12 +50,18 @@ const processTradeClosedEvent = async ({ tradeId, userId }) => {
         insight: reflection.insight,
         improvementSuggestion: reflection.improvement,
       };
-      const timeline = trade.intelligenceTimeline && typeof trade.intelligenceTimeline === "object"
-        ? trade.intelligenceTimeline
-        : {};
+      const timeline =
+        trade.intelligenceTimeline && typeof trade.intelligenceTimeline === "object"
+          ? { ...trade.intelligenceTimeline }
+          : {};
+      const rawPreTrade = timeline.preTrade;
+      const safePre =
+        rawPreTrade && typeof rawPreTrade === "object" && !Array.isArray(rawPreTrade)
+          ? { ...rawPreTrade }
+          : { riskLevel: null, flags: [], reasoning: [] };
       trade.intelligenceTimeline = {
         ...timeline,
-        preTrade: timeline.preTrade || trade.intelligenceTimeline?.preTrade || {},
+        preTrade: safePre,
         postTrade: {
           ...(timeline.postTrade || {}),
           outcome: reflection.executionPattern,

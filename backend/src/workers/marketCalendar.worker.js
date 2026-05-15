@@ -13,6 +13,7 @@
  * whatever data exists in MongoDB (fail-safe: empty cache → market treated as CLOSED).
  */
 const { syncCalendar } = require("../services/marketCalendarSync.service");
+const { seedNaiveCalendarRange } = require("../services/marketCalendarSeed.service");
 const {
   refreshCalendarCache,
   getMarketClockState,
@@ -21,6 +22,14 @@ const {
   getIstDateKey,
 } = require("../utils/marketHours.util");
 const logger = require("../utils/logger");
+
+/** When Docker sync returns 0 rows, seed weekday calendar (dev default on). */
+const shouldSeedFallback = () => {
+  const flag = String(process.env.CALENDAR_SEED_FALLBACK || "").toLowerCase();
+  if (flag === "false" || flag === "0") return false;
+  if (flag === "true" || flag === "1") return true;
+  return process.env.NODE_ENV === "development";
+};
 
 const CACHE_REFRESH_MS = Number(process.env.CALENDAR_CACHE_REFRESH_MS || 60 * 1000);
 const SYNC_INTERVAL_MS = Number(process.env.CALENDAR_SYNC_INTERVAL_MS || 24 * 60 * 60 * 1000);
@@ -35,11 +44,27 @@ let _lastMissingCalendarLogMs = 0;
  * Errors are swallowed so the worker never crashes the process.
  */
 const runSyncAndRefresh = async () => {
+  let synced = 0;
   try {
-    await syncCalendar();
+    synced = await syncCalendar();
   } catch (err) {
     logger.warn({ event: "MARKET_CALENDAR_SYNC_FAILED", message: err?.message });
   }
+
+  if (synced === 0 && shouldSeedFallback() && isCalendarDocumentMissingToday()) {
+    try {
+      const year = new Date().getFullYear();
+      await seedNaiveCalendarRange({ from: `${year}-01-01`, to: `${year + 1}-12-31` });
+      logger.warn({
+        event: "MARKET_CALENDAR_FALLBACK_SEED",
+        message:
+          "Docker calendar sync unavailable — applied naive weekday seed. Set TRADING_CALENDAR_URL for NSE holidays.",
+      });
+    } catch (seedErr) {
+      logger.warn({ event: "MARKET_CALENDAR_FALLBACK_SEED_FAILED", message: seedErr?.message });
+    }
+  }
+
   await runCacheRefresh();
 };
 
