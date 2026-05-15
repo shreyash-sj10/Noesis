@@ -1,11 +1,11 @@
-# NOESIS
+﻿# NOESIS
 
 **Behavior-aware paper trading for Indian equity markets (NSE-oriented).**
 
 [![CI](https://github.com/shreyash-sj10/Noesis/actions/workflows/ci.yml/badge.svg)](https://github.com/shreyash-sj10/Noesis/actions)
 ![Node.js](https://img.shields.io/badge/node.js-20+-339933?logo=nodedotjs&logoColor=white)
 ![MongoDB](https://img.shields.io/badge/MongoDB-replica%20set-47A248?logo=mongodb&logoColor=white)
-![Tests](https://img.shields.io/badge/automated%20tests-201%20(Jest%20%2B%20Vitest)-2ea44f)
+![Tests](https://img.shields.io/badge/automated%20tests-202%20(Jest%20%2B%20Vitest)-2ea44f)
 ![License](https://img.shields.io/badge/license-ISC-lightgrey)
 
 > **CI badge:** points at public repo [`shreyash-sj10/Noesis`](https://github.com/shreyash-sj10/Noesis). Update the workflow URL if your canonical remote differs.
@@ -39,7 +39,7 @@ npm run dev
 # Frontend (new terminal)
 cd frontend
 cp .env.example .env
-# Must match backend port — default in .env.example:
+# Must match backend port â€” default in .env.example:
 #   VITE_API_BASE_URL=http://localhost:5001
 npm run dev
 ```
@@ -48,9 +48,9 @@ Open **http://localhost:5180**. Register or log in.
 
 | Symptom | Likely cause |
 |--------|----------------|
-| Login shows **“Unable to authenticate”** + `ERR_CONNECTION_REFUSED` on `:5001` | API not running, or **`PORT` ≠ `VITE_API_BASE_URL`** (e.g. backend on `5000`, UI still calling `5001`). |
+| Login shows **â€œUnable to authenticateâ€** + `ERR_CONNECTION_REFUSED` on `:5001` | API not running, or **`PORT` â‰  `VITE_API_BASE_URL`** (e.g. backend on `5000`, UI still calling `5001`). |
 | CORS errors | `FRONTEND_URL` must include the exact SPA origin (`http://localhost:5180`). |
-| Trades fail on calendar | Optional `TRADING_CALENDAR_URL` Docker service down — see [India market runbook](docs/INDIA_MARKET_RUNBOOK.md) and `npm run seed:calendar` in `backend/`. |
+| Trades fail on calendar | Optional `TRADING_CALENDAR_URL` Docker service down â€” see [India market runbook](docs/INDIA_MARKET_RUNBOOK.md) and `npm run seed:calendar` in `backend/`. |
 
 Before production deploy: **`npm run verify:env`** (repo root or `backend/`).
 
@@ -62,12 +62,12 @@ NOESIS is a **full-stack paper trading simulator** for Indian cash equities (**d
 
 | Tier | Role |
 |------|------|
-| **`backend/`** | Express REST under `/api/*`, MongoDB (transactions on a **replica set**), in-process workers (outbox, stop/target monitor, square-off, calendar sync, order sweeper, execution executor). Optional **Redis / BullMQ** for cache, rate limits, and queues — **trade correctness does not require Redis**. |
+| **`backend/`** | Express REST under `/api/*`, MongoDB (transactions on a **replica set**), in-process workers (outbox, stop/target monitor, square-off, calendar sync, order sweeper, execution executor). Optional **Redis / BullMQ** for cache, rate limits, and queues â€” **trade correctness does not require Redis**. |
 | **`frontend/`** | React 19 + Vite 7 SPA (`frontend/src/v2/`): home terminal, markets scanner, portfolio, journal, profile, trace, weekly discipline report, trade decision overlay. |
 
 **Live quotes:** authenticated WebSocket  
 `ws(s)://<api-host>/api/ws/live-quote?token=<access_jwt>`  
-(`backend/src/infra/liveQuoteWs.js`) — same `getPrice()` path as `GET /api/market/quote`. HTTP remains authoritative for mutations. **Load balancers must allow WebSocket upgrade** on that path.
+(`backend/src/infra/liveQuoteWs.js`) â€” same `getPrice()` path as `GET /api/market/quote`. HTTP remains authoritative for mutations. **Load balancers must allow WebSocket upgrade** on that path.
 
 **Disclaimer:** Paper simulation only. Not investment advice. Not affiliated with NSE, BSE, or any broker. Execution **fails closed** when quotes are untrusted (`STALE`, drift checks, `MARKET_DATA_UNAVAILABLE`).
 
@@ -77,50 +77,7 @@ NOESIS is a **full-stack paper trading simulator** for Indian cash equities (**d
 
 ### System context
 
-```mermaid
-flowchart TB
-  subgraph Users["Actors"]
-    U[Trader / reviewer]
-  end
-
-  subgraph Client["Client tier"]
-    SPA["React SPA — Vite :5180<br/>frontend/src/v2"]
-  end
-
-  subgraph Edge["Edge"]
-    LB["TLS reverse proxy<br/>WS upgrade /api/ws/live-quote"]
-  end
-
-  subgraph API["API — Node 20"]
-    HTTP["Express — backend/src/app.js"]
-    WS["liveQuoteWs.js"]
-    WRK["Workers — backend/src/server.js"]
-  end
-
-  subgraph Data["Data"]
-    MONGO[("MongoDB replica set")]
-    REDIS[("Redis / Upstash optional")]
-  end
-
-  subgraph External["External"]
-    YF["yahoo-finance2"]
-    FH["Finnhub optional"]
-    GEM["Gemini optional"]
-    CAL["Trading calendar HTTP"]
-  end
-
-  U --> SPA
-  SPA --> LB
-  LB --> HTTP
-  LB --> WS
-  HTTP --> MONGO
-  HTTP --> REDIS
-  WRK --> MONGO
-  WRK --> YF
-  HTTP --> FH
-  HTTP --> GEM
-  WRK --> CAL
-```
+![NOESIS System Architecture](docs/diagrams/system-architecture.svg)
 
 ### Code layers (API process)
 
@@ -133,20 +90,20 @@ flowchart TB
   end
 
   subgraph Domain["Domain"]
-    ENG["engines/* — entry, exit, reflection, marketIntelligence"]
-    SVC["services/* — trade, price, risk, behavior, intelligence, …"]
+    ENG["engines/* â€” entry, exit, reflection, marketIntelligence"]
+    SVC["services/* â€” trade, price, risk, behavior, intelligence, â€¦"]
     ADP["adapters/*"]
   end
 
   subgraph Async["Async"]
     WKR["workers/*"]
     QUE["queue/*"]
-    INF["infra/* — liveQuoteWs, redisHealth, runtimeState"]
+    INF["infra/* â€” liveQuoteWs, redisHealth, runtimeState"]
   end
 
   subgraph Persistence["Persistence"]
     MOD["models/*"]
-    UTL["utils/* — transaction, logger, redisClient, …"]
+    UTL["utils/* â€” transaction, logger, redisClient, â€¦"]
   end
 
   R --> MW --> CTL
@@ -159,25 +116,9 @@ flowchart TB
 
 ### Trade execution (simplified)
 
-```mermaid
-sequenceDiagram
-  participant C as Client
-  participant E as Express
-  participant T as trade.service
-  participant P as price.engine
-  participant M as MongoDB txn
+![NOESIS System Flow](docs/diagrams/system-flow.svg)
 
-  C->>E: POST /api/trades/buy|sell<br/>Bearer, Idempotency-Key, pre-trade token
-  E->>T: rate limit, validate, market clock
-  T->>T: idempotency lock / replay
-  T->>P: getPrice(symbol)
-  P-->>T: pricePaise, source (STALE blocked at execution)
-  T->>M: claim token, HMAC payload, balances / holdings
-  M-->>T: commit
-  T-->>C: envelope + meta.traceId
-```
-
-**Scale constraint:** background loops run **in-process** on each API instance. Run **one** web replica until work is externalized — see [`backend/docs/BACKGROUND_WORKERS_SCALE.md`](backend/docs/BACKGROUND_WORKERS_SCALE.md).
+**Scale constraint:** background loops run **in-process** on each API instance. Run **one** web replica until work is externalized â€” see [`backend/docs/BACKGROUND_WORKERS_SCALE.md`](backend/docs/BACKGROUND_WORKERS_SCALE.md).
 
 ---
 
@@ -185,24 +126,24 @@ sequenceDiagram
 
 ### Pre-trade intelligence
 
-1. `POST /api/intelligence/pre-trade` — Zod-validated plan (`validatePreTradePayload`).
+1. `POST /api/intelligence/pre-trade` â€” Zod-validated plan (`validatePreTradePayload`).
 2. `preTradeGuard.service.js` loads news/sentiment, behavioral flags, closed-trade history; runs **`evaluateEntryDecision`** (`engines/entry.engine.js`) with **`risk.engine`** checks.
-3. **`issueDecisionToken`** (`preTradeAuthority.store.js`) stores UUID + **`payloadHash = HMAC-SHA256(JWT_SECRET, canonical JSON)`** over `symbol`, `productType`, `pricePaise`, `quantity`, `stopLossPaise`, `targetPricePaise`. TTL: **`PRE_TRADE_TOKEN_TTL_MS`** (clamped 60s–15m, default 10m).
-4. Gemini **`explainDecision`** runs **async** — token issuance does not wait on AI.
+3. **`issueDecisionToken`** (`preTradeAuthority.store.js`) stores UUID + **`payloadHash = HMAC-SHA256(JWT_SECRET, canonical JSON)`** over `symbol`, `productType`, `pricePaise`, `quantity`, `stopLossPaise`, `targetPricePaise`. TTL: **`PRE_TRADE_TOKEN_TTL_MS`** (clamped 60sâ€“15m, default 10m).
+4. Gemini **`explainDecision`** runs **async** â€” token issuance does not wait on AI.
 
-**Implementation nuance:** both `evaluateEntryDecision` calls in `preTradeGuard.service.js` pass a `plan` **without** `productType`, so composite weights default to **delivery-style** scoring. The **HMAC still binds `productType` from the request**, so execution cannot change product class without invalidating the token.
+**Implementation nuance:** both `evaluateEntryDecision` calls in `preTradeGuard.service.js` pass `productType` on `plan`, so delivery vs intraday weighting remains consistent with the request. The **HMAC also binds `productType`**, so execution cannot change product class without invalidating the token.
 
 ### Trade execution
 
-- **`POST /api/trades/buy`** / **`POST /api/trades/sell`**: `protect` → per-user rate limit (Redis store when available) → **`idempotency-key` required** → `validateTradePayload` → pre-trade token (`pre-trade-token` header or body) → `checkMarketClock` → `trade.service`.
-- **Idempotency:** `ExecutionLock` + `requestPayloadHash`; replay returns stored response; body mismatch → `PAYLOAD_MISMATCH`.
-- **Price:** `services/price.engine.js` — Redis → memory → Yahoo → stale memory; **`STALE` rejected** for execution.
+- **`POST /api/trades/buy`** / **`POST /api/trades/sell`**: `protect` â†’ per-user rate limit (Redis store when available) â†’ **`idempotency-key` required** â†’ `validateTradePayload` â†’ pre-trade token (`pre-trade-token` header or body) â†’ `checkMarketClock` â†’ `trade.service`.
+- **Idempotency:** `ExecutionLock` + `requestPayloadHash`; replay returns stored response; body mismatch â†’ `PAYLOAD_MISMATCH`.
+- **Price:** `services/price.engine.js` â€” Redis â†’ memory â†’ Yahoo â†’ stale memory; **`STALE` rejected** for execution.
 - **Money:** integer **paise** at boundaries; display rounding in adapters/UI.
 
 ### Post-trade
 
 - Outbox worker (`OUTBOX_POLL_MS`, default 5s) processes `TRADE_CLOSED` and related events (`workers/outbox.worker.js`).
-- **`reflection.engine.js`** maps exits to learning outcomes (`DISCIPLINED_PROFIT`, `DISCIPLINED_LOSS`, `POOR_PROCESS`, `LUCKY_PROFIT`, `NEUTRAL`, …).
+- **`reflection.engine.js`** maps exits to learning outcomes (`DISCIPLINED_PROFIT`, `DISCIPLINED_LOSS`, `POOR_PROCESS`, `LUCKY_PROFIT`, `NEUTRAL`, â€¦).
 
 ---
 
@@ -214,8 +155,8 @@ sequenceDiagram
 |-----------|---------|--------|
 | Frontend dev server | **5180** | `frontend/vite.config.js` (`strictPort: true`) |
 | Backend HTTP | **5001** in `.env.example`; code fallback **`8080`** if `PORT` unset | `backend/.env.example`, `backend/src/server.js` |
-| Frontend → API | **`http://localhost:5001`** → resolved to `…/api` | `frontend/.env.example`, `frontend/src/v2/api/api.js` (`resolveApiBaseUrl`) |
-| CORS | `FRONTEND_URL` + optional `FRONTEND_URLS`; dev fallback includes 5173–5180 | `backend/src/app.js` |
+| Frontend â†’ API | **`http://localhost:5001`** â†’ resolved to `â€¦/api` | `frontend/.env.example`, `frontend/src/v2/api/api.js` (`resolveApiBaseUrl`) |
+| CORS | `FRONTEND_URL` + optional `FRONTEND_URLS`; dev fallback includes 5173â€“5180 | `backend/src/app.js` |
 
 Use **`VITE_API_BASE_URL_LOCAL`** when you need localhost-only override without changing production `VITE_API_BASE_URL`.
 
@@ -240,8 +181,8 @@ JSON routes are under **`/api`** unless noted. Root probes (no `/api` prefix): *
 
 | Method | Path | Auth |
 |--------|------|------|
-| POST | `/api/auth/register` | — |
-| POST | `/api/auth/login` | — |
+| POST | `/api/auth/register` | â€” |
+| POST | `/api/auth/login` | â€” |
 | POST | `/api/auth/refresh` | HttpOnly refresh cookie + **`X-CSRF-Token`** |
 | POST | `/api/auth/logout` | Bearer |
 | GET | `/api/users/me` | Bearer |
@@ -285,7 +226,7 @@ JSON routes are under **`/api`** unless noted. Root probes (no `/api` prefix): *
 | GET | `/api/market/news` | Bearer + rate limit |
 | GET | `/api/market/news/portfolio` | Bearer + rate limit |
 
-**WebSocket:** `GET` upgrade on `/api/ws/live-quote` — JWT query param; Origin must match CORS allowlist.
+**WebSocket:** `GET` upgrade on `/api/ws/live-quote` â€” JWT query param; Origin must match CORS allowlist.
 
 ### Journal, analysis, metrics, trace
 
@@ -317,8 +258,8 @@ JSON routes are under **`/api`** unless noted. Root probes (no `/api` prefix): *
 
 - **Node.js 20+**
 - **MongoDB replica set** (Atlas or local `rs.initiate()`)
-- **Redis** — optional (`USE_REDIS=false` for degraded mode)
-- **Trading calendar** (optional Docker) — see `backend/.env.example` and [docs/INDIA_MARKET_RUNBOOK.md](docs/INDIA_MARKET_RUNBOOK.md)
+- **Redis** â€” optional (`USE_REDIS=false` for degraded mode)
+- **Trading calendar** (optional Docker) â€” see `backend/.env.example` and [docs/INDIA_MARKET_RUNBOOK.md](docs/INDIA_MARKET_RUNBOOK.md)
 
 ### Useful scripts
 
@@ -335,7 +276,7 @@ npm test
 npm run test:unit | test:integration | test:security | test:concurrency
 npm run seed:calendar
 npm run seed:portfolio
-npm run db:clear       # destructive — dev only
+npm run db:clear       # destructive â€” dev only
 
 # Frontend (cd frontend)
 npm run dev
@@ -350,7 +291,7 @@ npm run lint
 
 | Suite | Command | Notes |
 |-------|---------|--------|
-| Backend (Jest) | `cd backend && npm test` | **48** suites, **201** tests; in-memory Mongo **replica set** by default (`tests/setup/jest-env-mongo.js`). Set `USE_EXTERNAL_MONGO=true` to hit `MONGO_URI` from `.env`. |
+| Backend (Jest) | `cd backend && npm test` | **49** suites, **202** tests; in-memory Mongo **replica set** by default (`tests/setup/jest-env-mongo.js`). Set `USE_EXTERNAL_MONGO=true` to hit `MONGO_URI` from `.env`. |
 | Backend subsets | `npm run test:unit`, `test:integration`, `test:security`, `test:concurrency` | See `backend/package.json` |
 | Frontend (Vitest) | `cd frontend && npm run test:unit` | e.g. `marketSessionLabels.test.ts` |
 | Frontend build | `cd frontend && npm run build` | Required in CI |
@@ -361,10 +302,10 @@ npm run lint
 
 ## Deployment
 
-- **Blueprint:** [`render.yaml`](render.yaml) — web service, `rootDir: backend`, `healthCheckPath: /health`. Set **`MONGO_URI`**, **`JWT_SECRET`**, **`FRONTEND_URL`** (HTTPS SPA origin). Align frontend **`VITE_API_BASE_URL`** / **`VITE_API_URL`** with the public API URL.
+- **Blueprint:** [`render.yaml`](render.yaml) â€” web service, `rootDir: backend`, `healthCheckPath: /health`. Set **`MONGO_URI`**, **`JWT_SECRET`**, **`FRONTEND_URL`** (HTTPS SPA origin). Align frontend **`VITE_API_BASE_URL`** / **`VITE_API_URL`** with the public API URL.
 - **Single instance:** keep **one** API replica until background work is coordinated ([`backend/docs/BACKGROUND_WORKERS_SCALE.md`](backend/docs/BACKGROUND_WORKERS_SCALE.md)).
 - **WebSockets:** enable sticky upgrade or terminate WS on the same API tier.
-- **Static SPA:** deploy `frontend/dist/`; cookie `SameSite` / CORS must match (`AUTH_COOKIE_SAMESITE` in backend — see `.env.example`).
+- **Static SPA:** deploy `frontend/dist/`; cookie `SameSite` / CORS must match (`AUTH_COOKIE_SAMESITE` in backend â€” see `.env.example`).
 
 ---
 
@@ -373,7 +314,7 @@ npm run lint
 | Signal | Endpoint / location |
 |--------|---------------------|
 | Structured logs | Winston JSON (`service`, `step`, `status`, `traceId`) |
-| HTTP access | Morgan → Winston |
+| HTTP access | Morgan â†’ Winston |
 | Request metrics | `GET /metrics`, `GET /api/observability/metrics` |
 | Readiness | `GET /ready`, `GET /api/health/ready` |
 | Load tests | `scripts/k6/` (run only against environments you control) |
@@ -399,7 +340,7 @@ npm run lint
 | Realtime | `ws` (`liveQuoteWs.js`) |
 | Tests | Jest + supertest + mongodb-memory-server ReplicaSet; Vitest (frontend) |
 
-**License:** ISC (`backend/package.json`). Add a root `LICENSE` file if you want GitHub’s license picker to display standard text.
+**License:** ISC (`backend/package.json`). Add a root `LICENSE` file if you want GitHubâ€™s license picker to display standard text.
 
 ---
 
@@ -411,7 +352,7 @@ backend/
   src/routes/                 # Route modules (mounted in app.js)
   src/controllers/, middlewares/, adapters/
   src/engines/                # entry, exit, reflection, marketIntelligence
-  src/services/               # trade, price, intelligence, monitors, …
+  src/services/               # trade, price, intelligence, monitors, â€¦
   src/workers/, queue/, infra/, models/, utils/
   scripts/                    # verify-env, seeds, migrations
   tests/                      # Jest suites
@@ -445,7 +386,7 @@ package.json                  # install:all, build, start, verify:env
 ## Contributing
 
 1. Open an issue for large design changes.
-2. Branch → PR with what / why / risk.
+2. Branch â†’ PR with what / why / risk.
 3. **Quality bar:** `cd backend && npm test`, `cd frontend && npm run test:unit && npm run build`, `npm run verify:env` before production-related config changes.
 4. Never commit secrets (`.env`, API keys).
 
@@ -464,3 +405,4 @@ package.json                  # install:all, build, start, verify:env
 |--|--|
 | **Primary** | [@shreyash-sj10](https://github.com/shreyash-sj10) (Shreyash Jadhav) |
 | **Contributors** | PRs welcome; review is maintainer-led today. |
+
