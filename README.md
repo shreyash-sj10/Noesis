@@ -77,7 +77,7 @@ NOESIS is a **full-stack paper trading simulator** for Indian cash equities (**d
 
 ### System context
 
-![NOESIS System Architecture](docs/diagrams/system-architecture.svg)
+![NOESIS System Architecture](docs/images/noesis-system-architecture.png)
 
 ### Code layers (API process)
 
@@ -116,7 +116,7 @@ flowchart TB
 
 ### Trade execution (simplified)
 
-![NOESIS System Flow](docs/diagrams/system-flow.svg)
+![NOESIS System Flow](docs/images/noesis-system-flow.png)
 
 **Scale constraint:** background loops run **in-process** on each API instance. Run **one** web replica until work is externalized â€” see [`backend/docs/BACKGROUND_WORKERS_SCALE.md`](backend/docs/BACKGROUND_WORKERS_SCALE.md).
 
