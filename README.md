@@ -1,408 +1,459 @@
-﻿# NOESIS
+# NOESIS
+### Behavior-Aware Paper Trading Platform for Indian Equity Markets
 
-**Behavior-aware paper trading for Indian equity markets (NSE-oriented).**
-
-[![CI](https://github.com/shreyash-sj10/Noesis/actions/workflows/ci.yml/badge.svg)](https://github.com/shreyash-sj10/Noesis/actions)
-![Node.js](https://img.shields.io/badge/node.js-20+-339933?logo=nodedotjs&logoColor=white)
-![MongoDB](https://img.shields.io/badge/MongoDB-replica%20set-47A248?logo=mongodb&logoColor=white)
-![Tests](https://img.shields.io/badge/automated%20tests-202%20(Jest%20%2B%20Vitest)-2ea44f)
-![License](https://img.shields.io/badge/license-ISC-lightgrey)
-
-> **CI badge:** points at public repo [`shreyash-sj10/Noesis`](https://github.com/shreyash-sj10/Noesis). Update the workflow URL if your canonical remote differs.
-
-| | |
-|---|---|
-| [Quick start](#quick-start) | [Configuration](#configuration) |
-| [What it does](#what-it-does) | [Architecture](#architecture) |
-| [Core flows](#core-flows) | [API reference](#api-reference) |
-| [Local development](#local-development) | [Testing & CI](#testing--ci) |
-| [Deployment](#deployment) | [Operations](#operations) |
-| [Repository map](#repository-map) | [Documentation index](#documentation-index) |
+> A full-stack NSE paper trading simulator that treats trader psychology and decision quality as first-class data — not just PnL.
 
 ---
 
-## Quick start
+## The Problem
 
-**Goal:** SPA on **5180**, API on **5001**, both talking to the same origin.
+Most paper-trading tools record what happened. They track fills, quantities, and profit — but not *why* a trade was allowed, or whether the process was sound when it lost money.
 
-```bash
-# From repo root
-npm run install:all
+A revenge trade and a disciplined entry look identical in a standard database: same symbol, same price, same quantity. Beginners who review those records cannot separate good process from bad luck, or bad process from good luck — so they keep repeating the same mistakes.
 
-# Backend
-cd backend
-cp .env.example .env
-# Edit: MONGO_URI (replica set), JWT_SECRET (32+ chars), FRONTEND_URL=http://localhost:5180
-# Keep PORT=5001 unless you change the frontend env too (see below).
-npm run dev
-
-# Frontend (new terminal)
-cd frontend
-cp .env.example .env
-# Must match backend port â€” default in .env.example:
-#   VITE_API_BASE_URL=http://localhost:5001
-npm run dev
-```
-
-Open **http://localhost:5180**. Register or log in.
-
-| Symptom | Likely cause |
-|--------|----------------|
-| Login shows **â€œUnable to authenticateâ€** + `ERR_CONNECTION_REFUSED` on `:5001` | API not running, or **`PORT` â‰  `VITE_API_BASE_URL`** (e.g. backend on `5000`, UI still calling `5001`). |
-| CORS errors | `FRONTEND_URL` must include the exact SPA origin (`http://localhost:5180`). |
-| Trades fail on calendar | Optional `TRADING_CALENDAR_URL` Docker service down â€” see [India market runbook](docs/INDIA_MARKET_RUNBOOK.md) and `npm run seed:calendar` in `backend/`. |
-
-Before production deploy: **`npm run verify:env`** (repo root or `backend/`).
+NOESIS solves this by treating every trade as a **decision with a recorded intent**, not just a transaction with a recorded fill. Before any order executes, the trader must plan it. After it closes, an engine classifies the exit against that original plan — producing a verdict that separates process quality from financial outcome.
 
 ---
 
-## What it does
+## How It Works
 
-NOESIS is a **full-stack paper trading simulator** for Indian cash equities (**delivery** and **intraday buy-only**). It does **not** connect to a live broker.
+A trader starts by submitting a trade plan: entry price, stop-loss, target, product type, and the thinking behind the trade. NOESIS runs that plan through three scoring engines — setup quality, market consensus, and behavioral history — and returns a composite 0–100 risk score with an ALLOW / CAUTION / BLOCK verdict.
 
-| Tier | Role |
-|------|------|
-| **`backend/`** | Express REST under `/api/*`, MongoDB (transactions on a **replica set**), in-process workers (outbox, stop/target monitor, square-off, calendar sync, order sweeper, execution executor). Optional **Redis / BullMQ** for cache, rate limits, and queues â€” **trade correctness does not require Redis**. |
-| **`frontend/`** | React 19 + Vite 7 SPA (`frontend/src/v2/`): home terminal, markets scanner, portfolio, journal, profile, trace, weekly discipline report, trade decision overlay. |
+If the trade is allowed, the system issues a short-lived authority token cryptographically bound to the exact plan parameters. The execution endpoint only accepts trades carrying a valid, unmodified token — changing any field after approval causes rejection.
 
-**Live quotes:** authenticated WebSocket  
-`ws(s)://<api-host>/api/ws/live-quote?token=<access_jwt>`  
-(`backend/src/infra/liveQuoteWs.js`) â€” same `getPrice()` path as `GET /api/market/quote`. HTTP remains authoritative for mutations. **Load balancers must allow WebSocket upgrade** on that path.
-
-**Disclaimer:** Paper simulation only. Not investment advice. Not affiliated with NSE, BSE, or any broker. Execution **fails closed** when quotes are untrusted (`STALE`, drift checks, `MARKET_DATA_UNAVAILABLE`).
+Once a position closes, a background worker asynchronously classifies the exit against the original plan: a stop-loss hit after full hold time becomes `DISCIPLINED_LOSS`; an exit within 10 minutes at a small gain becomes `POOR_PROCESS`. These verdicts feed back into the next pre-trade evaluation, creating a behavioral learning loop.
 
 ---
 
 ## Architecture
 
-### System context
-
-![NOESIS System Architecture](docs/images/noesis-system-architecture.png)
-
-### Code layers (API process)
-
 ```mermaid
-flowchart TB
-  subgraph Transport["Transport"]
-    R["routes/*"]
-    MW["middlewares/*"]
-    CTL["controllers/*"]
-  end
+flowchart TD
+    subgraph Client["React SPA (Vite + TanStack Query)"]
+        UI["Pages & Components"]
+        AS["accessTokenStore.js\n(in-memory JWT)"]
+        WS["WebSocket Client\n/api/ws/live-quote"]
+    end
 
-  subgraph Domain["Domain"]
-    ENG["engines/* â€” entry, exit, reflection, marketIntelligence"]
-    SVC["services/* â€” trade, price, risk, behavior, intelligence, â€¦"]
-    ADP["adapters/*"]
-  end
+    subgraph API["Express API (Node.js)"]
+        MW["Middleware Chain\nauthn · zod · rate-limit · market-clock · HMAC"]
+        RT["27 Endpoints / 7 Route Files"]
+        CT["Controllers"]
+    end
 
-  subgraph Async["Async"]
-    WKR["workers/*"]
-    QUE["queue/*"]
-    INF["infra/* â€” liveQuoteWs, redisHealth, runtimeState"]
-  end
+    subgraph Engines["Domain Engines (Pure Logic)"]
+        EN["entry.engine\ncomposite 0-100 score"]
+        EX["exit.engine\nexit classification"]
+        RF["reflection.engine\nfour-quadrant verdict"]
+        BH["behavior.engine\n6-pattern detection"]
+        RK["risk.engine\nRR + plan validation"]
+    end
 
-  subgraph Persistence["Persistence"]
-    MOD["models/*"]
-    UTL["utils/* â€” transaction, logger, redisClient, â€¦"]
-  end
+    subgraph Services["Services / Orchestration"]
+        TS["trade.service\nATOMIC transactions"]
+        PTG["preTradeGuard.service\ntoken orchestration"]
+        PTS["preTradeAuthority.store\nHMAC payloadHash"]
+        PE["price.engine\nRedis → Memory → Yahoo"]
+        SL["stopLossMonitor\n30s polling"]
+        EE["execution.executor\n60s polling"]
+    end
 
-  R --> MW --> CTL
-  CTL --> SVC
-  SVC --> ENG
-  SVC --> MOD
-  WKR --> SVC
-  INF --> SVC
+    subgraph Workers["Background Workers"]
+        OW["outbox.worker\n5s setInterval"]
+        RW["reflection.worker\nBullMQ consumer"]
+        SS["squareoff.schedule\nBullMQ cron 15:20 IST"]
+        CW["marketCalendar.worker\n60s refresh"]
+    end
+
+    subgraph Data["MongoDB (Replica Set Required)"]
+        TR["trades"]
+        US["users"]
+        HO["holdings"]
+        PT["preTradeTokens"]
+        EL["executionLocks"]
+        OB["outbox"]
+        MC["+ 4 collections"]
+    end
+
+    subgraph Infra["External / Infrastructure"]
+        RD["Redis / Upstash\n(optional)"]
+        YF["Yahoo Finance\nprimary prices"]
+        FH["Finnhub\nfallback + news"]
+        GE["Google Gemini\nAI explanations (optional)"]
+    end
+
+    UI --> AS & WS
+    AS --> RT
+    RT --> MW --> CT
+    CT --> TS & PTG
+    PTG --> EN & BH & RK & PTS
+    TS --> PE --> RD
+    PE --> YF
+    FH -.->|fallback| PE
+    TS --> Data
+    OW --> RW & Services
+    SL & EE --> TS
+    RW --> RF --> EX
+    WS --> PE
+    RD -.->|optional| Services
+    GE -.->|optional AI| Services
+    OB --> OW
 ```
 
-### Trade execution (simplified)
-
-![NOESIS System Flow](docs/images/noesis-system-flow.png)
-
-**Scale constraint:** background loops run **in-process** on each API instance. Run **one** web replica until work is externalized â€” see [`backend/docs/BACKGROUND_WORKERS_SCALE.md`](backend/docs/BACKGROUND_WORKERS_SCALE.md).
+### Key Design Decisions
 
 ---
 
-## Core flows
-
-### Pre-trade intelligence
-
-1. `POST /api/intelligence/pre-trade` â€” Zod-validated plan (`validatePreTradePayload`).
-2. `preTradeGuard.service.js` loads news/sentiment, behavioral flags, closed-trade history; runs **`evaluateEntryDecision`** (`engines/entry.engine.js`) with **`risk.engine`** checks.
-3. **`issueDecisionToken`** (`preTradeAuthority.store.js`) stores UUID + **`payloadHash = HMAC-SHA256(JWT_SECRET, canonical JSON)`** over `symbol`, `productType`, `pricePaise`, `quantity`, `stopLossPaise`, `targetPricePaise`. TTL: **`PRE_TRADE_TOKEN_TTL_MS`** (clamped 60sâ€“15m, default 10m).
-4. Gemini **`explainDecision`** runs **async** â€” token issuance does not wait on AI.
-
-**Implementation nuance:** both `evaluateEntryDecision` calls in `preTradeGuard.service.js` pass `productType` on `plan`, so delivery vs intraday weighting remains consistent with the request. The **HMAC also binds `productType`**, so execution cannot change product class without invalidating the token.
-
-### Trade execution
-
-- **`POST /api/trades/buy`** / **`POST /api/trades/sell`**: `protect` â†’ per-user rate limit (Redis store when available) â†’ **`idempotency-key` required** â†’ `validateTradePayload` â†’ pre-trade token (`pre-trade-token` header or body) â†’ `checkMarketClock` â†’ `trade.service`.
-- **Idempotency:** `ExecutionLock` + `requestPayloadHash`; replay returns stored response; body mismatch â†’ `PAYLOAD_MISMATCH`.
-- **Price:** `services/price.engine.js` â€” Redis â†’ memory â†’ Yahoo â†’ stale memory; **`STALE` rejected** for execution.
-- **Money:** integer **paise** at boundaries; display rounding in adapters/UI.
-
-### Post-trade
-
-- Outbox worker (`OUTBOX_POLL_MS`, default 5s) processes `TRADE_CLOSED` and related events (`workers/outbox.worker.js`).
-- **`reflection.engine.js`** maps exits to learning outcomes (`DISCIPLINED_PROFIT`, `DISCIPLINED_LOSS`, `POOR_PROCESS`, `LUCKY_PROFIT`, `NEUTRAL`, â€¦).
+**Integer paise throughout.** All monetary values — balance, prices, stop-loss, target, P&L — are stored and computed as integers in paise (1 INR = 100 paise).
+**Why:** Eliminates floating-point rounding errors in trade math. `user.model.js` line 27 comment: "ALWAYS STORED IN PAISE". `holding.model.js` enforces `validator: Number.isInteger` on `avgPricePaise`.
+**Tradeoff:** All display formatting (₹ symbol, decimal conversion) is the client's responsibility; the API never returns human-formatted currency strings.
 
 ---
 
-## Configuration
-
-### Ports and URLs (local)
-
-| Component | Default | Source |
-|-----------|---------|--------|
-| Frontend dev server | **5180** | `frontend/vite.config.js` (`strictPort: true`) |
-| Backend HTTP | **5001** in `.env.example`; code fallback **`8080`** if `PORT` unset | `backend/.env.example`, `backend/src/server.js` |
-| Frontend â†’ API | **`http://localhost:5001`** â†’ resolved to `â€¦/api` | `frontend/.env.example`, `frontend/src/v2/api/api.js` (`resolveApiBaseUrl`) |
-| CORS | `FRONTEND_URL` + optional `FRONTEND_URLS`; dev fallback includes 5173â€“5180 | `backend/src/app.js` |
-
-Use **`VITE_API_BASE_URL_LOCAL`** when you need localhost-only override without changing production `VITE_API_BASE_URL`.
-
-### Required environment (real runs)
-
-| Variable | Where | Purpose |
-|----------|--------|---------|
-| `MONGO_URI` | backend | Replica-set MongoDB (Atlas M0+ or local `rs.initiate()`) |
-| `JWT_SECRET` | backend | Access/refresh signing + pre-trade HMAC (32+ chars) |
-| `FRONTEND_URL` | backend | Primary CORS origin (HTTPS in prod) |
-| `VITE_API_BASE_URL` or `VITE_API_URL` | frontend build | Public API origin (with or without `/api` suffix) |
-
-See **`backend/.env.example`** and **`frontend/.env.example`** for Redis, calendar, Finnhub, Gemini, rate limits, square-off IST time, and safety flags (`ALLOW_CLOSED_MARKET_EXECUTION`, `SKIP_CSRF_DEV` blocked in production by `scripts/verify-env.js`).
+**HMAC payload binding.** The pre-trade authority token stores an HMAC-SHA256 hash of the canonical trade payload (`symbol`, `productType`, `pricePaise`, `quantity`, `stopLossPaise`, `targetPricePaise`). At execution, the server recomputes the hash from the incoming request body and rejects any mismatch with `400 PAYLOAD_MISMATCH`.
+**Why:** Prevents approval shopping — getting AI sign-off for "Buy 10 shares at ₹500 SL ₹480" and then modifying the request to "Buy 500 shares". Source: `preTradeAuthority.store.js` lines 29–42.
+**Tradeoff:** Every canonical field is frozen at evaluation time. Even a legitimate price improvement requires re-running the full pre-trade evaluation.
 
 ---
 
-## API reference
-
-JSON routes are under **`/api`** unless noted. Root probes (no `/api` prefix): **`GET /health`**, **`GET /ready`**, **`GET /metrics`**.
-
-### Auth & users
-
-| Method | Path | Auth |
-|--------|------|------|
-| POST | `/api/auth/register` | â€” |
-| POST | `/api/auth/login` | â€” |
-| POST | `/api/auth/refresh` | HttpOnly refresh cookie + **`X-CSRF-Token`** |
-| POST | `/api/auth/logout` | Bearer |
-| GET | `/api/users/me` | Bearer |
-| GET | `/api/users/profile` | Bearer |
-
-### Intelligence & pre-trade
-
-| Method | Path | Auth |
-|--------|------|------|
-| POST | `/api/intelligence/pre-trade` | Bearer |
-| POST | `/api/intelligence/judge-trade` | Bearer |
-| GET | `/api/intelligence/news` | Bearer |
-| GET | `/api/intelligence/portfolio` | Bearer |
-| GET | `/api/intelligence/global` | Bearer |
-| GET | `/api/intelligence/timeline` | Bearer |
-| GET | `/api/intelligence/profile` | Bearer |
-
-### Trades & portfolio
-
-| Method | Path | Auth |
-|--------|------|------|
-| POST | `/api/trades/buy` | Bearer + trade limits + idempotency + pre-trade |
-| POST | `/api/trades/sell` | Bearer + trade limits + idempotency + pre-trade |
-| GET | `/api/trades` | Bearer |
-| GET | `/api/trades/execution-status/:tradeId` | Bearer |
-| GET | `/api/portfolio/summary` | Bearer |
-| GET | `/api/portfolio/positions` | Bearer |
-
-### Market data (read-mostly)
-
-| Method | Path | Auth |
-|--------|------|------|
-| GET | `/api/market/session` | Rate limit |
-| GET | `/api/market/quote?symbol=` | Rate limit |
-| GET | `/api/market/indices` | Rate limit |
-| GET | `/api/market/overview` | Rate limit |
-| GET | `/api/market/validate` | Rate limit |
-| GET | `/api/market/history` | Rate limit |
-| GET | `/api/market/fundamentals` | Rate limit |
-| GET | `/api/market/explore` | Rate limit |
-| GET | `/api/market/news` | Bearer + rate limit |
-| GET | `/api/market/news/portfolio` | Bearer + rate limit |
-
-**WebSocket:** `GET` upgrade on `/api/ws/live-quote` â€” JWT query param; Origin must match CORS allowlist.
-
-### Journal, analysis, metrics, trace
-
-| Method | Path | Auth |
-|--------|------|------|
-| GET | `/api/journal/summary` | Bearer |
-| GET | `/api/analysis/summary` | Bearer |
-| GET | `/api/metrics/skill-progress` | Bearer |
-| GET | `/api/metrics/behavior` | Bearer |
-| GET | `/api/metrics/outcomes` | Bearer |
-| GET | `/api/trace` | Bearer |
-| GET | `/api/trace/:trace_id` | Bearer |
-
-### Health & observability
-
-| Method | Path | Notes |
-|--------|------|--------|
-| GET | `/health`, `/api/health` | Liveness |
-| GET | `/ready`, `/api/health/ready` | Readiness (Mongo + worker flags; 503 when core down) |
-| GET | `/metrics`, `/api/observability/metrics` | Request counters (no Prometheus exporter in-tree) |
-| GET | `/api/observability/jobs/summary` | Outbox depth |
-| GET | `/api/observability/traces/:traceId` | Buffered trace events (restricted in production unless `ENABLE_TRACE_BUFFER=true`) |
+**Transactional outbox for async reflection.** After a SELL executes, the atomic MongoDB transaction writes an `Outbox` document (`status: PENDING`, `type: TRADE_CLOSED`) in the same session as the balance and holding updates. A background poller picks this up and runs reflection asynchronously.
+**Why:** Reflection calls Google Gemini and runs multi-step analysis. Doing this inside the HTTP request would add seconds to trade response P99. The outbox guarantees the job is never lost if the process crashes mid-request. Source: `outbox.worker.js`, `reflectionWorker.service.js`.
+**Tradeoff:** Reflection results appear seconds after trade close, not instantly. Clients poll `GET /api/trades/execution-status/:tradeId`.
 
 ---
 
-## Local development
+**Behavioral veto floor.** If a trader's behavior score falls below 20 (out of 100), the entry engine returns `BLOCK` regardless of how good the setup or market context is.
+**Why:** A structurally sound trade plan executed by a demonstrably reckless trader (revenge-trading, overtrading) is still a high-risk execution. This is the core product thesis. Source: `entry.engine.js` line 36 (`behavioralVetoFloor: 20`).
+**Tradeoff:** A legitimately good trade can be blocked by behavioral history. This is intentional — the platform prioritizes process learning over execution freedom.
+
+---
+
+**Deterministic engines, AI as overlay.** The ALLOW/BLOCK verdict, exit classification, and reflection quadrant are all computed by pure mathematical functions with no AI calls. Google Gemini is called only for the human-readable *explanation* of a verdict already determined.
+**Why:** Determinism makes verdicts testable and reproducible. Every output can be recomputed given the same inputs. Gemini is entirely optional — if `GEMINI_API_KEY` is absent, all explanations return `UNAVAILABLE` and the deterministic verdict still stands.
+**Tradeoff:** Scoring weights and thresholds (e.g., `behavioralVetoFloor`, `LOW_RR_THRESHOLD`) are currently hardcoded in `system.config.js`. Calibration requires a code change.
+
+---
+
+**Redis as optional, MongoDB as fallback.** Every Redis-dependent path has an explicit code fallback: auth cache (→ MongoDB), pre-trade token lookup (→ `PreTradeToken.findOne()`), live quote cache (→ in-process `Map` → Yahoo), BullMQ (→ Outbox poller).
+**Why:** The Upstash REST client (`infra/redisClient.js` line 38: `supportsBullMQ: false`) cannot support BullMQ's TCP-based protocol. The system must run correctly without persistent Redis.
+**Tradeoff:** In-process caches (rate limiters, quote cache) are per-replica. Running multiple API instances creates state divergence — an accepted constraint for this deployment tier.
+
+---
+
+**MongoDB replica set required.** All trade mutations — balance deduction, holding upsert, trade creation, token consumption, outbox insertion — execute inside a single `session.withTransaction()` call.
+**Why:** Multi-document atomicity is non-negotiable for financial correctness. A process crash between decrementing balance and creating the trade document would permanently corrupt the ledger. Source: `transaction.js` line 16, with 8-retry logic for `TransientTransactionError` and write-conflict code 112.
+**Tradeoff:** Standalone MongoDB fails at `mongoose.startSession()`. Local development requires a replica set.
+
+---
+
+## Tech Stack
+
+| Layer | Technology | Why |
+|---|---|---|
+| **Frontend** | React 18 + Vite | Fast HMR for development; tree-shakeable production build for the SPA |
+| **Server state** | TanStack Query v5 | Stale-while-revalidate per query key; eliminates Redux boilerplate for server data |
+| **Backend** | Node.js + Express | Non-blocking I/O suits concurrent WebSocket ticks and polling workers |
+| **Database** | MongoDB 7 (replica set) | Multi-document ACID transactions required; document model fits nested trade decision data without joins |
+| **Cache** | Redis via Upstash REST | Optional; auth user cache (30s TTL), pre-trade token hot path, live quote shared cache |
+| **Validation** | Zod | `strict()` schemas reject unknown fields, preventing mass-assignment; shared between route and controller |
+| **Auth** | JWT + HttpOnly cookie + CSRF | Access token in JS memory (never `localStorage`); refresh token cookie not readable by JS; double-submit CSRF on `/refresh` |
+| **Market data** | Yahoo Finance (`yahoo-finance2`) | Primary live quote source for execution price; Finnhub is the HTTP fallback |
+| **AI** | Google Gemini | Generates human-readable explanations for deterministic verdicts; entirely optional — absent key degrades gracefully |
+| **Queue** | BullMQ (when ioredis available) | Reliable cron and job processing for reflection and square-off; falls back to Outbox poller + `setInterval` |
+| **Testing** | Jest + `mongodb-memory-server` | Real `withTransaction` semantics in CI via `MongoMemoryReplSet` — no mocking of the transaction layer |
+| **CI** | GitHub Actions | 7-step pipeline: setup → MongoDB service → install → syntax check → backend tests → frontend tests → build |
+
+---
+
+## Core Features
+
+### Pre-Trade Intelligence Pipeline
+
+No order can be submitted without completing a pre-trade evaluation. `POST /api/intelligence/pre-trade` accepts the full plan and runs:
+
+1. **Plan capture** — symbol, direction, entry price, stop-loss, target, product type (`DELIVERY`/`INTRADAY`), and trader reasoning are required. The `enforceBuyReview` middleware hard-requires `stopLossPaise` and `targetPricePaise` — a buy order without a stop-loss cannot be submitted at the route level, before reaching the controller.
+
+2. **Three-pillar composite score** — `entry.engine.evaluateEntryDecision()` computes:
+   - *Setup score (0–100):* Based on Reward-to-Risk ratio. Below `LOW_RR_THRESHOLD`, penalized by `LOW_RR_PENALTY`.
+   - *Market score (0–100):* 95 if aligned with AI consensus, 30 if AVOID, with `adaptiveHighPenalty` (−10) when market risk is flagged HIGH.
+   - *Behavior score (0–100):* From `behavior.engine.analyzeBehavior()` over closed-trade history. `REVENGE_TRADING_RISK` caps score at 35; `OVERTRADING_RISK` caps at 40. Intraday trades additionally penalize `FOMO_ENTRY` (−25), `PANIC_EXIT` (−20), and `CHASING_PRICE` (−15).
+   - *Composite weights:* Delivery → Setup (40%) + Market (30%) + Behavior (30%). Intraday → Setup (40%) + Market (20%) + Behavior (40%).
+
+3. **Behavioral veto** — If behavior score < 20, verdict is `BLOCK` regardless of composite score.
+
+4. **Authority token issuance** — On ALLOW or CAUTION, `preTradeAuthority.store.js` creates a `PreTradeToken` document in MongoDB with a HMAC-SHA256 `payloadHash` of the canonical fields. Token TTL: 10 minutes (configurable). Token lifecycle: `VALID → IN_USE → CONSUMED`.
+
+### Execution Safety
+
+- **Idempotency** — `ExecutionLock` model: compound unique index on `{ userId, requestId }`. Duplicate requests return the cached response without re-executing. TTL auto-expiry via MongoDB index (`executionLock.model.js` lines 28–32).
+- **HMAC payload binding** — At execution, the server re-derives the HMAC over the incoming request body. Any field modification since token issuance returns `400 PAYLOAD_MISMATCH` and aborts before any DB write.
+- **Stale price blocking** — `price.engine.js` follows: Redis → in-process `Map` → Yahoo Finance. If all paths return stale data, execution throws `503 MARKET_DATA_UNAVAILABLE` and the transaction is not started. `MAX_CLIENT_PRICE_DRIFT_PCT` (default 0.5%) also blocks if the submitted price deviates too far from the live quote.
+- **Atomic transaction scope** — One `session.withTransaction()` covers: balance deduction, `reservedBalancePaise` release, holding upsert (weighted-average price via aggregation pipeline), trade document creation, token state → `CONSUMED`, outbox insertion. All succeed together or all roll back.
+
+### Market Realism
+
+- **IST session enforcement** — `marketHours.service.js` computes current IST time against NSE hours (9:15–15:30). The `checkMarketClock` middleware returns `403 MARKET_CLOSED` outside hours.
+- **Holiday calendar** — `MarketCalendar` collection syncs from a Docker service every 24 hours (`marketCalendar.worker.js`). Holidays block execution even within trading hours.
+- **Intraday square-off** — BullMQ cron in `squareoff.schedule.js` fires at 15:20 IST on weekdays (Mon–Fri). Falls back to `setInterval` when BullMQ is unavailable. All open intraday positions are auto-closed at the live market price.
+- **Stop-loss / target monitoring** — `stopLossMonitor.service.js` polls open holdings every 30 seconds, checks live price against each position's `stopLossPaise` and `targetPricePaise`, and triggers automated sells when thresholds are breached.
+- **Delivery vs. intraday isolation** — Holdings tracked separately per `{ userId, symbol, tradeType }`. Intraday and delivery positions in the same symbol are independent, with independent average prices.
+
+### Post-Trade Reflection
+
+After a SELL executes, the outbox event triggers `processTradeClosedEvent()` which runs:
+
+1. **Exit classification** (`exit.engine.js`) — Compares actual exit price and hold duration against the original plan:
+
+| Condition | Exit Type |
+|---|---|
+| Exit within 10 min, not at stop-loss | `PANIC` |
+| Exit price ≤ stop-loss | `STOP_LOSS_HIT` |
+| Exit price > target price | `LATE_EXIT` |
+| Exit price between entry and target | `EARLY_EXIT` |
+| Exit price between stop-loss and entry | `EARLY_CUT` |
+
+2. **Reflection verdict** (`reflection.engine.js`) — Maps exit classification to a psychological outcome:
+
+| Exit Classification | Verdict |
+|---|---|
+| `STOPPED_OUT` | `DISCIPLINED_LOSS` |
+| `TARGET_HIT` | `DISCIPLINED_PROFIT` |
+| `PANIC` | `POOR_PROCESS` |
+| `EARLY_PROFIT_TAKE` | `POOR_PROCESS` |
+| `OVERHOLD` | `LUCKY_PROFIT` |
+| `EARLY_CUT` | `DISCIPLINED_LOSS` |
+
+3. **AI explanation** — `aiExplanation.service.js` calls Gemini for a human-readable learning summary. The verdict is already determined; the explanation is supplementary and fails gracefully.
+
+4. **Trade finalized** — Status transitions `EXECUTED_PENDING_REFLECTION → COMPLETE`. `User.systemStateVersion` increments to signal clients that data has changed.
+
+### Behavioral Analytics
+
+- **6 patterns detected** by `behavior.engine.js`: `REVENGE_TRADING`, `OVERTRADING`, `HOLDING_LOSERS`, `LOSS_CHASING`, `FOMO_ENTRY`, `CHASING_PRICE`. Each has a configurable detection window and confidence threshold sourced from `SYSTEM_CONFIG`.
+- **Discipline score** — `100 − Σ(pattern.confidence / 2)` across all detected patterns.
+- **Real-time pre-trade signals** — `behaviorSignals.service.js` queries the last 20 trades *before* a new entry to catch behavioral risk that hasn't yet produced a closed trade (e.g., revenge risk within minutes of a loss). This is the circuit breaker for the most time-sensitive patterns.
+- **Skill progression** — `progression.engine.js` compares last-20 vs. prior-20 closed trades for discipline trend direction, surfaced via `GET /api/metrics/skill-progress`.
+
+### Background Workers
+
+| Worker | File | Function | Trigger |
+|---|---|---|---|
+| Outbox Poller | `workers/outbox.worker.js` | Dequeues `PENDING` outbox jobs; dispatches to reflection and analytics handlers | Every 5 seconds (`setInterval`) |
+| Reflection Worker | `queue/workers/reflection.worker.js` | BullMQ consumer for `TRADE_CLOSED` events; calls `processTradeClosedEvent()` | Triggered by outbox dispatch |
+| Stop-Loss Monitor | `services/stopLossMonitor.service.js` | Polls open holdings; auto-sells on SL/TP breach via `trade.service` | Every 30 seconds |
+| Square-Off Scheduler | `queue/squareoff.schedule.js` | Force-closes all open intraday positions at 15:20 IST | BullMQ cron `20 15 * * 1-5`; interval fallback |
+| Execution Executor | `services/execution.executor.js` | Picks up `PENDING_EXECUTION` trades and calls `executeOrder()` | Every 60 seconds |
+| Order Sweeper | `services/order.sweeper.js` | Marks expired pending orders `FAILED`; releases reserved balance | Periodic |
+
+---
+
+## Complete Trade Lifecycle
+
+The full sequence from first thought to final journal entry:
+
+1. **Register / Login** — `POST /api/auth/register` → `POST /api/auth/login`. Returns a short-lived access JWT (15 min, stored in JS memory via `accessTokenStore.js`, never `localStorage`) and a long-lived refresh token (7 days, `HttpOnly` cookie). Rate limited to 10 requests / 15 minutes per IP.
+
+2. **Check market conditions** — `GET /api/market/session` confirms NSE is open. `GET /api/market/quote?symbol=RELIANCE.NS` fetches live price (Yahoo Finance primary, Finnhub fallback). `GET /api/intelligence/pre-trade-news` returns AI-analyzed signals for the symbol.
+
+3. **Request pre-trade evaluation** — `POST /api/intelligence/pre-trade` with full plan. `intelligenceLimiter` enforces 30 requests/minute per IP. `preTradeGuard.service` orchestrates: `risk.engine` validates plan → `behaviorSignals.service` checks live patterns → `behavior.engine` scores historical trades → `entry.engine` computes composite verdict → `preTradeAuthority.store` issues authority token with HMAC `payloadHash`. Token valid for 10 minutes.
+
+4. **Submit buy order** — `POST /api/trades/buy` with `Idempotency-Key` header and `pre-trade-token` header. Middleware chain runs in order:
+   - `protect` — JWT verified; user loaded from Redis cache (30s TTL) or MongoDB fallback
+   - `tradeLimiter` — 5 requests / 10 seconds per *user ID*, Redis-backed
+   - `enforceRequestId` — idempotency lock acquired in `ExecutionLock`
+   - `validateTradePayload` — Zod strict schema; unknown fields rejected
+   - `enforceBuyReview` — `stopLossPaise` and `targetPricePaise` required at route level
+   - `checkMarketClock` — IST hours and holiday calendar checked
+
+5. **Atomic execution opens** — `mongoose.startSession().withTransaction()` begins. Inside the transaction:
+   - `PreTradeToken` fetched; verified as `VALID`
+   - HMAC recomputed from request body; compared to stored `payloadHash` — mismatch aborts
+   - Live price fetched via `price.engine.js` (Redis → memory → Yahoo)
+   - Client price drift checked against live price (max 0.5% deviation)
+   - System invariants validated
+   - User balance decremented; `reservedBalancePaise` released
+   - `Holding` upserted with weighted-average price update
+   - `Trade` document created with status `EXECUTED`
+   - `PreTradeToken` state set to `CONSUMED`
+   - `Outbox` record inserted (`type: TRADE_CLOSED` for SELL, nothing for BUY)
+   - All writes committed atomically.
+
+6. **Client polls async status** — `GET /api/trades/execution-status/:tradeId` until status leaves `PENDING_EXECUTION` or `PROCESSING`.
+
+7. **Position monitored automatically** — `stopLossMonitor.service.js` checks the holding every 30 seconds against live prices. If price hits `stopLossPaise`, an automated sell is triggered through the full `trade.service` path. If `INTRADAY`, the square-off cron fires at 15:20 IST.
+
+8. **Manual sell** — Follows the same pre-trade evaluation and execution middleware chain as BUY. On execution success, trade status becomes `EXECUTED_PENDING_REFLECTION` and an `Outbox` record (`TRADE_CLOSED`) is inserted in the same transaction.
+
+9. **Async reflection** — `outbox.worker.js` dequeues the event within 5 seconds (or BullMQ `reflection.worker.js` if Redis is available). `processTradeClosedEvent()` runs:
+   - `exit.engine` classifies the exit type and deviation score
+   - `reflection.engine` assigns the four-quadrant psychological verdict
+   - Gemini generates a human-readable learning summary (optional)
+   - Trade status transitions → `COMPLETE`; `reflectionStatus` → `DONE`
+   - `User.systemStateVersion` increments
+
+10. **Journal and analytics** — `GET /api/journal/summary` returns closed trades with reflection verdicts. `GET /api/metrics/behavior` returns current behavioral pattern analysis. `GET /api/analysis/summary` returns the analytics snapshot. The behavioral data from this trade feeds into the *next* pre-trade evaluation's behavior score.
+
+---
+
+## Security
+
+| Concern | Implementation |
+|---|---|
+| **Access token storage** | JS module-level variable in `accessTokenStore.js`; never `localStorage`; cleared on full page reload |
+| **Refresh token** | `HttpOnly` cookie — not readable by JavaScript; protected from XSS token theft |
+| **CSRF protection** | Double-submit cookie pattern on `/refresh`; `X-CSRF-Token` header required; `SKIP_CSRF_DEV=true` blocked by `verify-env.js` in production with `process.exit(1)` |
+| **HMAC payload integrity** | SHA-256 HMAC over canonical payload fields in `preTradeAuthority.store.js`; mismatch → `400 PAYLOAD_MISMATCH` before any DB write |
+| **Idempotency replay** | `ExecutionLock` compound unique index `{ userId, requestId }`; replays return cached response, never re-execute |
+| **NoSQL injection** | `express-mongo-sanitize` strips `$` and `.` from all request bodies globally (`app.js` line 14) |
+| **Security headers** | `helmet()` applied globally: HSTS, XSS protection, no-sniff, frameguard, content security policy |
+| **CORS** | Explicit origin allowlist from `FRONTEND_URL` / `FRONTEND_URLS` env vars; warns if non-HTTPS origin detected in production |
+| **Rate limiting** | 5 limiters: `authLimiter` (IP, 10/15m), `refreshLimiter` (IP, 60/15m), `intelligenceLimiter` (IP, 30/min), `tradeLimiter` (user ID, 5/10s, Redis-backed), `marketReadLimiter` (IP, 60/min) |
+| **Password storage** | `bcryptjs` with salt factor 10 via Mongoose `pre("save")` hook; raw password never stored |
+| **Refresh token at rest** | SHA-256 hash of the raw token stored in MongoDB; raw token never persisted; cannot be replayed from a DB dump |
+
+---
+
+## Testing
+
+**206 total test cases** across **51 test files** (49 backend suites via Jest, 2 frontend suites via Vitest). All pass. All are wired into the CI pipeline — no floating test files.
+
+| Category | Location | What it covers |
+|---|---|---|
+| **Unit** | `backend/tests/unit/` | Isolated pure functions: risk math, market-hours timezone logic, composite score weights, exit classification |
+| **Integration** | `backend/tests/integration/` | End-to-end buy/sell flows with real MongoDB transactions, stale price blocking, HMAC tamper detection, full audit sequence (`system.audit.test.js`) |
+| **Security** | `backend/tests/security/` | Rejected JWT signatures, expired tokens, CSRF barriers, token replay prevention |
+| **Concurrency** | `backend/tests/concurrency/` | Overlapping reflection payloads to verify exactly-once journaling under race conditions |
+
+**MongoDB transaction testing:** Integration tests use `MongoMemoryReplSet` from `mongodb-memory-server`, which initializes a real in-process MongoDB replica set. `withTransaction` semantics run against actual replica-set machinery — the transaction layer is not mocked.
+
+**CI pipeline** (`.github/workflows/ci.yml`, 7 steps): Node.js 20 setup → MongoDB service container → `npm ci` → backend syntax check → `npm test` (Jest, `--runInBand`) → `npm run test:unit` (Vitest) → production `build`.
+
+**Coverage gaps (honest):**
+- No Playwright or Cypress E2E tests. The pre-trade token handoff from evaluation to execution, which is the most critical client-side flow, is not browser-tested.
+- No multi-instance concurrency tests. The `stopLossMonitor` race condition across two API replicas against the same MongoDB cluster is not simulated.
+- Yahoo Finance and Finnhub responses are stubbed in all tests. Live schema drift from upstream providers would not be caught by CI.
+
+---
+
+## Known Limitations
+
+1. **MongoDB replica set required for local development** — `mongoose.startSession()` throws on a standalone instance; developers must run `mongod --replSet rs0` or use Docker Compose with replica set initialization. (`backend/src/utils/transaction.js` line 16)
+
+2. **In-process workers cannot scale horizontally** — The outbox poller, stop-loss monitor, and execution executor run as `setInterval` loops inside the single Express process. Deploying two API replicas causes duplicate polling and potential double-execution. (`server.js` lines 20–22 document this explicitly as a known constraint.)
+
+3. **BullMQ is inactive on Upstash REST Redis** — The Upstash REST client facade sets `supportsBullMQ: false` (`infra/redisClient.js` line 38). BullMQ reflection and square-off workers only activate when a separate raw `ioredis` TCP connection is provided. The current `render.yaml` does not wire one.
+
+4. **Reflection worker does not guard against incorrect event types** — `processTradeClosedEvent()` checks `reflectionStatus` for `DONE`/`FAILED` but does not verify that the trade `type` is `SELL` or `status` is `EXECUTED_PENDING_REFLECTION`. A misrouted `TRADE_CLOSED` event for a BUY trade would corrupt the trade document by transitioning it to `COMPLETE`. (`reflectionWorker.service.js` lines 24–28)
+
+5. **Intelligence and market rate limiters use in-process `MemoryStore`** — `intelligenceLimiter` and `marketReadLimiter` are not Redis-backed. Their limits apply per-replica, not per-cluster. Under load balancing, a user can exceed the intended global rate limit by routing requests across replicas. (`middlewares/rateLimiter.js`)
+
+6. **Two independent price-fetching paths can diverge** — `price.engine.js` (used by trade execution and WebSocket) and `marketData/live.provider.js` (used by `GET /api/market/quote`) both ultimately call Yahoo Finance but through different cache layers. The displayed quote and the execution price can differ at the same instant.
+
+---
+
+## What I Would Do Next
+
+1. **Fix the reflection worker guard (one-line, high correctness impact).** Add `if (trade.type !== "SELL" || trade.status !== "EXECUTED_PENDING_REFLECTION") return;` at the top of `processTradeClosedEvent()`. This prevents status corruption on any misrouted outbox event with no behavioral change to the happy path.
+
+2. **Separate background workers into a dedicated process.** Move the outbox poller, stop-loss monitor, and execution executor into a standalone Node process (or a dedicated BullMQ worker service in `render.yaml`). This removes the single-instance constraint entirely, makes horizontal API scaling safe, and eliminates the duplicate-polling risk without any change to the core business logic.
+
+3. **Unify the two price-fetching paths.** Refactor `marketData/live.provider.js` to route all quote requests through `price.engine.js`'s `getLivePrice()`. This ensures the price shown on the dashboard and the price used for execution come from the same cache layer, eliminating the divergence a user would notice as slippage.
+
+---
+
+## Getting Started
 
 ### Prerequisites
 
-- **Node.js 20+**
-- **MongoDB replica set** (Atlas or local `rs.initiate()`)
-- **Redis** â€” optional (`USE_REDIS=false` for degraded mode)
-- **Trading calendar** (optional Docker) â€” see `backend/.env.example` and [docs/INDIA_MARKET_RUNBOOK.md](docs/INDIA_MARKET_RUNBOOK.md)
+- Node.js 20+
+- MongoDB 7 running as a **replica set** — standalone MongoDB will fail at `mongoose.startSession()`
+- (Optional) An Upstash Redis account or local Redis instance for caching and BullMQ
 
-### Useful scripts
+### Required Environment Variables
 
 ```bash
-# Repo root
-npm run install:all
-npm run build          # frontend production bundle
-npm run start          # backend only (node src/server.js)
-npm run verify:env
+MONGO_URI=mongodb://localhost:27017/noesis?replicaSet=rs0
+JWT_SECRET=<at-least-32-character-random-string>
+FRONTEND_URL=http://localhost:5173
+```
 
-# Backend (cd backend)
-npm run dev
+See `.env.example` in the repository root for all optional variables: Gemini API key, Finnhub key, rate-limit overrides, BullMQ Redis URL, token TTLs, and price drift thresholds.
+
+### Install and Run
+
+```bash
+# Clone
+git clone https://github.com/<your-username>/noesis.git
+cd noesis
+
+# Backend
+cd backend
+npm install
+npm run dev          # Express on port 5000 (or PORT env var)
+
+# Frontend (separate terminal)
+cd ../frontend
+npm install
+npm run dev          # Vite dev server on port 5173
+```
+
+### Run Tests
+
+```bash
+# Backend — all 206 test cases
+cd backend
 npm test
-npm run test:unit | test:integration | test:security | test:concurrency
-npm run seed:calendar
-npm run seed:portfolio
-npm run db:clear       # destructive â€” dev only
 
-# Frontend (cd frontend)
-npm run dev
+# Frontend — 4 unit tests
+cd frontend
 npm run test:unit
-npm run build
-npm run lint
 ```
 
 ---
 
-## Testing & CI
-
-| Suite | Command | Notes |
-|-------|---------|--------|
-| Backend (Jest) | `cd backend && npm test` | **49** suites, **202** tests; in-memory Mongo **replica set** by default (`tests/setup/jest-env-mongo.js`). Set `USE_EXTERNAL_MONGO=true` to hit `MONGO_URI` from `.env`. |
-| Backend subsets | `npm run test:unit`, `test:integration`, `test:security`, `test:concurrency` | See `backend/package.json` |
-| Frontend (Vitest) | `cd frontend && npm run test:unit` | e.g. `marketSessionLabels.test.ts` |
-| Frontend build | `cd frontend && npm run build` | Required in CI |
-
-**GitHub Actions** (`.github/workflows/ci.yml`): Node 20; backend tests with MongoDB 6 service + `REQUIRE_DB_TESTS=1`; frontend Vitest + Vite production build.
-
----
-
-## Deployment
-
-- **Blueprint:** [`render.yaml`](render.yaml) â€” web service, `rootDir: backend`, `healthCheckPath: /health`. Set **`MONGO_URI`**, **`JWT_SECRET`**, **`FRONTEND_URL`** (HTTPS SPA origin). Align frontend **`VITE_API_BASE_URL`** / **`VITE_API_URL`** with the public API URL.
-- **Single instance:** keep **one** API replica until background work is coordinated ([`backend/docs/BACKGROUND_WORKERS_SCALE.md`](backend/docs/BACKGROUND_WORKERS_SCALE.md)).
-- **WebSockets:** enable sticky upgrade or terminate WS on the same API tier.
-- **Static SPA:** deploy `frontend/dist/`; cookie `SameSite` / CORS must match (`AUTH_COOKIE_SAMESITE` in backend â€” see `.env.example`).
-
----
-
-## Operations
-
-| Signal | Endpoint / location |
-|--------|---------------------|
-| Structured logs | Winston JSON (`service`, `step`, `status`, `traceId`) |
-| HTTP access | Morgan â†’ Winston |
-| Request metrics | `GET /metrics`, `GET /api/observability/metrics` |
-| Readiness | `GET /ready`, `GET /api/health/ready` |
-| Load tests | `scripts/k6/` (run only against environments you control) |
-
-| Risk | Mitigation in code |
-|------|---------------------|
-| Horizontal scale | One API instance or externalize workers / distributed locks |
-| Market data | Yahoo + optional Finnhub; not licensed NSE feed; throttling + cache tiers |
-| Automation latency | Stop/target monitor is polling-based (`stopLossMonitor.service.js`) |
-| AI on critical path | Never blocks pre-trade token issuance |
-
----
-
-## Tech stack
-
-| Layer | Choices |
-|-------|---------|
-| SPA | React 19, Vite 7, TanStack Query, Tailwind 4, React Router 6 |
-| API | Express 4, Node 20, Zod validation, JWT + HttpOnly refresh + CSRF on refresh |
-| Data | Mongoose, MongoDB transactions |
-| Cache / queue | `ioredis`, `@upstash/redis`, BullMQ (optional) |
-| Market prices | `yahoo-finance2`, `p-queue` throttle (`price.engine.js`) |
-| Realtime | `ws` (`liveQuoteWs.js`) |
-| Tests | Jest + supertest + mongodb-memory-server ReplicaSet; Vitest (frontend) |
-
-**License:** ISC (`backend/package.json`). Add a root `LICENSE` file if you want GitHubâ€™s license picker to display standard text.
-
----
-
-## Repository map
+## Project Structure
 
 ```
-backend/
-  src/app.js, server.js       # HTTP app, bootstrap, WebSocket attach
-  src/routes/                 # Route modules (mounted in app.js)
-  src/controllers/, middlewares/, adapters/
-  src/engines/                # entry, exit, reflection, marketIntelligence
-  src/services/               # trade, price, intelligence, monitors, â€¦
-  src/workers/, queue/, infra/, models/, utils/
-  scripts/                    # verify-env, seeds, migrations
-  tests/                      # Jest suites
-  docs/BACKGROUND_WORKERS_SCALE.md
-frontend/
-  src/v2/                     # Primary SPA (pages, features, api, hooks)
-  vite.config.js              # dev port 5180
-docs/                         # Architecture, India market, portfolio, trade contract
-scripts/k6/                   # Optional load scripts
-render.yaml                   # Example Render web service
-package.json                  # install:all, build, start, verify:env
+noesis/
+├── backend/
+│   └── src/
+│       ├── app.js                  # Express app factory; global middleware stack
+│       ├── server.js               # Process entry point; worker startup; health probes
+│       ├── routes/                 # 7 route files, 27 endpoints
+│       ├── controllers/            # HTTP ↔ service boundary; no business logic
+│       ├── engines/                # Pure logic: entry, exit, reflection, journal, learning, market intelligence
+│       ├── services/               # Orchestration + I/O: trade, market data, price, behavior, risk, SL monitor
+│       │   └── intelligence/       # preTradeGuard.service, preTradeAuthority.store
+│       ├── workers/                # setInterval jobs: outbox poller, calendar sync, analytics
+│       ├── queue/                  # BullMQ queue definition + reflection/squareoff workers
+│       │   └── workers/
+│       ├── models/                 # 10 Mongoose models (Trade, User, Holding, PreTradeToken, ...)
+│       ├── middlewares/            # auth, rateLimiter, validateData, validateTradePayload, error, tracing
+│       ├── infra/                  # redisClient (Upstash facade), liveQuoteWs, runtimeState
+│       ├── domain/                 # DTOs, FIFO P&L mapping, trade contract normalizers
+│       ├── adapters/               # Outbound shape translation for API responses
+│       ├── context/                # AsyncLocalStorage for traceId propagation through workers
+│       ├── config/                 # db.js, system.config.js (weights, thresholds, limits)
+│       └── utils/                  # transaction.js (8-retry wrapper), Winston logger, validators
+│
+├── frontend/
+│   └── src/
+│       ├── v2/
+│       │   ├── api/                # Axios clients with auth interceptors; TanStack Query hooks
+│       │   ├── components/         # Shared UI components
+│       │   └── pages/              # Route-level views
+│       └── features/
+│           └── auth/               # AuthContext, accessTokenStore.js
+│
+├── .github/
+│   └── workflows/
+│       └── ci.yml                  # 7-step CI pipeline
+│
+└── render.yaml                     # Single web-service deployment config
 ```
 
 ---
 
-## Documentation index
+## License
 
-| Document | Purpose |
-|----------|---------|
-| [backend/docs/BACKGROUND_WORKERS_SCALE.md](backend/docs/BACKGROUND_WORKERS_SCALE.md) | Single-instance vs horizontal scale |
-| [docs/INDIA_MARKET_RUNBOOK.md](docs/INDIA_MARKET_RUNBOOK.md) | NSE session, calendar Docker, IST square-off |
-| [docs/PORTFOLIO.md](docs/PORTFOLIO.md) | Portfolio API and capital semantics |
-| [docs/TRADE_CONTRACT_v1.md](docs/TRADE_CONTRACT_v1.md) | Trade payload / response contract |
-| [docs/SYSTEM_DESIGN.md](docs/SYSTEM_DESIGN.md) | System design notes |
-| [backend/.env.example](backend/.env.example) | Backend environment reference |
-| [frontend/.env.example](frontend/.env.example) | Frontend environment reference |
-| [backend/tests/README.md](backend/tests/README.md) | How backend tests use Mongo |
-
----
-
-## Contributing
-
-1. Open an issue for large design changes.
-2. Branch â†’ PR with what / why / risk.
-3. **Quality bar:** `cd backend && npm test`, `cd frontend && npm run test:unit && npm run build`, `npm run verify:env` before production-related config changes.
-4. Never commit secrets (`.env`, API keys).
-
----
-
-## Getting help
-
-- **Issues:** [github.com/shreyash-sj10/Noesis/issues](https://github.com/shreyash-sj10/Noesis/issues)
-- **Security:** report sensitive findings privately to the maintainer.
-
----
-
-## Maintainers
-
-| | |
-|--|--|
-| **Primary** | [@shreyash-sj10](https://github.com/shreyash-sj10) (Shreyash Jadhav) |
-| **Contributors** | PRs welcome; review is maintainer-led today. |
-
+MIT
